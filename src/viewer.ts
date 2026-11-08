@@ -2254,12 +2254,38 @@ export class ThreeModelViewer {
   }
 
   /**
-   * Generates tri-planar / box-projected UV coordinates on any geometry that lacks
-   * a `uv` attribute (such as raw `.stl` scans or untextured CAD `.glb`s) so procedural
-   * textures and bump maps wrap cleanly without stretching or solid-color artifacts.
+   * Checks whether a geometry's `color` attribute actually contains varying multi-color vertex painting
+   * (as opposed to uniform white/gray `COLOR_0` attributes exported by many AI 3D generators).
    */
-  private ensureGeometryHasUVs(geometry: THREE.BufferGeometry): void {
-    if (geometry.attributes.uv) return;
+  private hasVaryingVertexColors(geometry: THREE.BufferGeometry): boolean {
+    const col = geometry.attributes.color;
+    if (!col || col.count < 2) return false;
+
+    const r0 = col.getX(0);
+    const g0 = col.getY(0);
+    const b0 = col.getZ(0);
+    const step = Math.max(1, Math.floor(col.count / 48));
+
+    for (let i = step; i < col.count; i += step) {
+      const dr = Math.abs(col.getX(i) - r0);
+      const dg = Math.abs(col.getY(i) - g0);
+      const db = Math.abs(col.getZ(i) - b0);
+      if (dr > 0.05 || dg > 0.05 || db > 0.05) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Generates tri-planar / box-projected UV coordinates on untextured geometry
+   * so procedural patina textures and bump maps wrap cleanly across all 3 axes
+   * (even when an untextured GLB has missing or degenerate all-zero UVs).
+   */
+  private ensureGeometryHasUVs(geometry: THREE.BufferGeometry, forceTriplanar = false): void {
+    if (geometry.attributes.uv && !forceTriplanar && geometry.userData?.hasTriplanarUVs) {
+      return;
+    }
     const pos = geometry.attributes.position;
     if (!pos) return;
 
@@ -2301,6 +2327,8 @@ export class ThreeModelViewer {
     }
 
     geometry.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
+    geometry.userData = geometry.userData || {};
+    geometry.userData.hasTriplanarUVs = true;
   }
 
   /**
@@ -2321,20 +2349,20 @@ export class ThreeModelViewer {
     );
     const hasTextureMap =
       !wasUntexturedPatina && Boolean(std.map || std.emissiveMap || std.normalMap);
-    const hasVertexColors = Boolean(geometry.attributes.color);
+    const hasVertexColors = this.hasVaryingVertexColors(geometry);
     const hsl = { h: 0, s: 0, l: 1 };
     if (std.color && typeof std.color.getHSL === 'function') {
       std.color.getHSL(hsl);
     }
     const isPlainWhiteOrGray =
-      wasUntexturedPatina || (!hasTextureMap && !hasVertexColors && hsl.s < 0.2 && hsl.l > 0.42);
+      wasUntexturedPatina || (!hasTextureMap && !hasVertexColors && hsl.s < 0.25);
 
     const isUntexturedSolidColor = !hasTextureMap && !hasVertexColors && !isPlainWhiteOrGray;
 
     if (this.daisFinishMode === 'auto-patina') {
       if (isPlainWhiteOrGray) {
         // Replace untextured parts with the piece's random procedural museum patina
-        this.ensureGeometryHasUVs(geometry);
+        this.ensureGeometryHasUVs(geometry, true);
         const preset = presets[randomPatinaKey];
 
         std.map = preset.map;
@@ -2343,11 +2371,12 @@ export class ThreeModelViewer {
         std.color?.setHex(preset.color);
         std.metalness = preset.metalness;
         std.roughness = preset.roughness;
+        std.vertexColors = false;
         std.userData.isUntexturedPatina = true;
         std.needsUpdate = true;
       } else if (isUntexturedSolidColor) {
         // Give flat-colored untextured parts subtle metallic sheen and brushed bump grain
-        this.ensureGeometryHasUVs(geometry);
+        this.ensureGeometryHasUVs(geometry, true);
         std.bumpMap = std.bumpMap || presets.bronze.bumpMap;
         std.bumpScale = 0.012;
         std.metalness = Math.max(std.metalness ?? 0, 0.52);
@@ -2358,7 +2387,7 @@ export class ThreeModelViewer {
     }
 
     // Unified material finish override ('bronze' | 'chrome' | 'marble')
-    this.ensureGeometryHasUVs(geometry);
+    this.ensureGeometryHasUVs(geometry, true);
     const preset = presets[this.daisFinishMode];
     std.map = preset.map;
     std.bumpMap = std.bumpMap || preset.bumpMap;
@@ -4384,6 +4413,33 @@ export class ThreeModelViewer {
     let triangles = 0;
     let meshes = 0;
 
+    const presets = this.getProceduralPresets();
+    const patinaKeys: Array<'bronze' | 'verdigris' | 'chrome' | 'marble'> = [
+      'bronze',
+      'verdigris',
+      'chrome',
+      'marble',
+    ];
+    const modelPatinaKey = patinaKeys[Math.floor(Math.random() * patinaKeys.length)];
+
+    // First pass: check if this model is a multi-color low-poly asset (e.g., green leaves + brown trunk)
+    const distinctColorHexes = new Set<number>();
+    let hasAnyTextureMap = false;
+    root.traverse((obj) => {
+      const mesh = obj as THREE.Mesh;
+      if (!mesh.isMesh || !mesh.material) return;
+      const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+      for (const m of mats) {
+        const std = m as THREE.MeshStandardMaterial;
+        if (std.map || std.emissiveMap || std.normalMap) {
+          hasAnyTextureMap = true;
+        } else if (std.color) {
+          distinctColorHexes.add(std.color.getHex());
+        }
+      }
+    });
+    const isMultiColorPalette = distinctColorHexes.size >= 2;
+
     root.traverse((obj) => {
       const mesh = obj as THREE.Mesh;
       if (mesh.isMesh && mesh.geometry) {
@@ -4396,6 +4452,46 @@ export class ThreeModelViewer {
           } else {
             triangles += Math.floor(pos.count / 3);
           }
+        }
+
+        const hasVaryingVC = this.hasVaryingVertexColors(mesh.geometry);
+        const upgradeMat = (m: THREE.Material): THREE.Material => {
+          const std = m as THREE.MeshStandardMaterial;
+          if (!std) return m;
+          const hasTex = Boolean(std.map || std.emissiveMap || std.normalMap);
+          if (hasTex || hasVaryingVC) return m;
+
+          const hsl = { h: 0, s: 0, l: 1 };
+          if (std.color && typeof std.color.getHSL === 'function') {
+            std.color.getHSL(hsl);
+          }
+          const isUntexturedTarget =
+            Boolean(std.userData?.isFallbackStudioMaterial) ||
+            (!isMultiColorPalette && !hasAnyTextureMap) ||
+            hsl.s < 0.25;
+
+          if (isUntexturedTarget) {
+            const cMat = std.clone();
+            this.ensureGeometryHasUVs(mesh.geometry, true);
+            const preset = presets[modelPatinaKey];
+            cMat.map = preset.map;
+            cMat.bumpMap = preset.bumpMap;
+            cMat.bumpScale = preset.bumpScale;
+            cMat.color?.setHex(preset.color);
+            cMat.metalness = preset.metalness;
+            cMat.roughness = preset.roughness;
+            cMat.vertexColors = false;
+            cMat.userData = { ...std.userData, isUntexturedPatina: true };
+            cMat.needsUpdate = true;
+            return cMat;
+          }
+          return m;
+        };
+
+        if (Array.isArray(mesh.material)) {
+          mesh.material = mesh.material.map(upgradeMat);
+        } else if (mesh.material) {
+          mesh.material = upgradeMat(mesh.material);
         }
       }
     });

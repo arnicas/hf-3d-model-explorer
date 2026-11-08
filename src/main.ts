@@ -85,7 +85,7 @@ const btnResetCam = document.getElementById('btn-reset-cam') as HTMLButtonElemen
 const discovery = new HF3DDiscoveryService();
 const viewer = new ThreeModelViewer(canvas, viewportContainer);
 
-const IDLE_TIMEOUT_SECONDS = 30;
+const IDLE_TIMEOUT_SECONDS = 20;
 let idleCycleEnabled = true;
 let idleSecondsRemaining = IDLE_TIMEOUT_SECONDS;
 

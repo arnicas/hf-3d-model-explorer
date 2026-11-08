@@ -13,11 +13,15 @@ Switch between the two views at any time using the top-left mode toggle button o
 ### 1. Studio View (Single-Model Turntable)
 * **Focused 3D Inspection**: Displays one random 3D model at a time on a warm studio turntable with OrbitControls, contact shadows, and automatic maquette scale normalization.
 * **Dataset & Geometry Inspector**: The right-hand sidebar shows the source Hugging Face dataset, author, license, description, tags, and live geometry stats (vertices, triangles, meshes, file size, format) along with direct links to download the 3D file or browse the repository tree.
-* **Viewport Controls**: Toggle auto-rotation (<kbd>A</kbd>), wireframe (<kbd>W</kbd>), studio floor (<kbd>G</kbd>), Y/Z up-axis flip (<kbd>U</kbd>), camera reset (<kbd>C</kbd>), or 30-second idle auto-advance (<kbd>I</kbd>).
+* **Viewport Controls**: Toggle auto-rotation (<kbd>A</kbd>), wireframe (<kbd>W</kbd>), studio floor (<kbd>G</kbd>), Y/Z up-axis flip (<kbd>U</kbd>), camera reset (<kbd>C</kbd>), or 20-second idle auto-advance (<kbd>I</kbd>).
 
 ### 2. Museum Showroom View (4 Pedestals + Central "Thought Piece" Dais)
 * **Walkable 4-Pedestal Gallery**: Places 4 distinct 3D models onto individual marble-and-walnut museum plinths (<kbd>1</kbd>–<kbd>4</kbd>) arranged in a semi-circular gallery arc, surrounded by framed wall paintings streamed from Hugging Face art datasets (`Andris2067/Paintings_old`, `royam0820/baya-paintings-01`, `Nguyen17/laion_art_en`, and Met Open Access).
 * **Proximity LOD & 3D Lectern Plaques**: As you walk around with <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> or Arrow keys (or click any pedestal/plaque to glide to it), distant pedestals automatically transition between Full PBR Detail, Medium Lambert LOD, and Wireframe LOD. Each pedestal features an angled 3D lectern plaque displaying its title, dataset, triangle count, and scale.
+* **Framed Gallery Wall Art (12 Canvases)**:
+  * Surrounding the pedestals are **12 framed wall canvases** (3 along the front bay wall, 4 along the left and right wings, and 5 along the rear promenade wall).
+  * Loaded instantly from [`public/manifest-art.json`](public/manifest-art.json) (80 pre-verified works compiled via [`scripts/generate-art-manifest.ts`](scripts/generate-art-manifest.ts) from Hugging Face art datasets including `metmuseum/openaccess`, `Nguyen17/laion_art_en`, `Andris2067/Paintings_old`, `royam0820/baya-paintings-01`, `Artificio/WikiArt`, and `jiovine/pixel-art-nouns`, with a live fallback in [`HF3DDiscoveryService.fetchMuseumWallArtworks()`](src/hf.ts) that also queries `biglam/european_art`).
+  * [`ThreeModelViewer.applyWallArtworks()`](src/viewer.ts) composites each painting onto a `512×320` canvas texture with a bottom brass-style museum label (title + artist/dataset credit), prevents duplicates across active frames and a 100-item rolling history (`recentArtHistory`), rotates one wall frame whenever a new 3D exhibit is rolled, and falls back to a procedural geometric exhibition plate if offline.
 * **Central "Thought Piece" Dais (<kbd>5</kbd> / `⚡ Thought Piece`)**:
   * Positioned at the center of the rotunda, the **Thought Piece** fuses 3 models from the surrounding pedestals into a single composite sculpture.
   * **Totem & Collision Modes (<kbd>T</kbd>)**: Defaults to a vertical **Totem Stack** (which analyzes 10-band vertical cross-section profiles and vertex medoids to stack the heaviest base on the bottom and interlock joints in 3D space) and can be toggled to a chaotic **3-Model Collision**.
@@ -32,8 +36,8 @@ Whenever 3 models are automatically combined onto the central **Thought Piece** 
 
 1. **Multi-Angle Snapshot Photography**: [`ThreeModelViewer.captureDaisSculptureSnapshots()`](src/viewer.ts) captures **3 multi-angle 256×256 JPEG snapshots** (`quality: 0.8`) from three camera angles (`-0.68`, `0.68`, and `2.38` radians) around the combined sculpture and immediately restores the user camera frame so no flicker occurs. Because each image is 256×256 (≤384×384), Gemini bills a single tile (~258 tokens) per image (~774 image tokens total per call).
 2. **Multimodal Gemini Naming (`@google/genai`)**: [`generateSculptureNameForDais()`](src/gemini-visitor.ts) sends the 3 JPEG views to **`gemini-3.5-flash-lite`** with `ThinkingLevel.MINIMAL`, prompting it to create a **2 to 6 word sculpture title** in structured JSON (`{ "name": "..." }`).
-3. **Live Plaque Engraving**: As soon as Gemini returns the title, the 3D lectern plaque in front of the central dais re-renders with the new title (e.g., `✦ EXHIBIT TITLE · NAMED BY GEMINI FROM 3 CAMERA ANGLES`).
-4. **Cost-Conscious Manual Controls**: Gemini is only called when a new Thought Piece is automatically assembled (on initial Showroom entry and after every 2 new sculptures are added to the museum). Manually clicking **💥 Re-Assemble (<kbd>R</kbd>)** or toggling **🗿 Mode: Totem / Smash (<kbd>T</kbd>)** re-arranges the current 3 objects and keeps the existing Gemini title with **zero additional Gemini API calls**.
+3. **Live Plaque Engraving & Curated Backup Titles**: As soon as Gemini returns the title, the 3D lectern plaque in front of the central dais re-renders with the new title (e.g., `✦ EXHIBIT TITLE · NAMED BY GEMINI FROM 3 CAMERA ANGLES`). If no Gemini API key is configured or the free API quota is reached, [`generateSculptureNameForDais()`](src/gemini-visitor.ts) automatically falls back to [`FALLBACK_SCULPTURE_NAMES`](src/gemini-visitor.ts) — a non-repeating archive of 56 obscure, deadpan sculpture titles (e.g., *The Contemplation of Breakdown*, *A Schism in the Void*, *Repetition on Its Head*, *A Broken Material*, *Her Mother's Habit*, *Infection*, *Alien Gloss*, *Rhyme in Time, Upright*).
+4. **Cost-Conscious Manual Controls**: Gemini is only called when a new Thought Piece is automatically assembled (on initial Showroom entry and after every 2 new sculptures are added to the museum). Manually clicking **💥 Re-Assemble (<kbd>R</kbd>)** or toggling **🗿 Mode: Totem / Smash (<kbd>T</kbd>)** re-arranges the current 3 objects and keeps the existing title with **zero additional Gemini API calls**.
 
 ---
 
@@ -213,5 +217,5 @@ When live polling runs, it stages newly discovered 3D files into a background bu
 | **Roll New Exhibit** | <kbd>Space</kbd> (loads a new model; Thought Piece auto-rebuilds every 2 new museum exhibits) |
 | **Toggle View Mode** | <kbd>M</kbd> (switches between Single-Model Studio and 4-Pedestal Museum Showroom) |
 | **Toggle Spatial Audio** | Click the **🔊 Audio** sidebar pill |
-| **Toggle Auto-Idle Next** | <kbd>I</kbd> or click **Idle Next: 30s** pill |
+| **Toggle Auto-Idle Next** | <kbd>I</kbd> or click **Idle Next: 20s** pill |
 | **Open HF Dataset / Download** | Click `#N 📊 Dataset ↗` or `#N ⬇️ Download 3D ↗` in the top header |
