@@ -1,0 +1,293 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="dark" />
+    <title>HF 3D Roulette — Random 3D Models from Hugging Face</title>
+    <link rel="preconnect" href="https://huggingface.co" crossorigin />
+    <link rel="preconnect" href="https://datasets-server.huggingface.co" crossorigin />
+    <link rel="stylesheet" href="/src/style.css" />
+  </head>
+  <body>
+    <div id="app">
+      <!-- 3D Viewport Canvas Container -->
+      <main id="viewport-container" aria-label="Interactive 3D Model Viewport">
+        <canvas id="three-canvas"></canvas>
+
+        <!-- Top-Left View Mode Switcher & Showroom HUD -->
+        <div class="viewport-top-bar">
+          <button
+            type="button"
+            id="btn-toggle-mode"
+            class="btn-mode-toggle"
+            title="Switch between Single-Model Studio and 4-Pedestal Museum Showroom (M)"
+          >
+            <span id="mode-toggle-icon" aria-hidden="true">🏛️</span>
+            <span id="mode-toggle-text">Showroom View (4 Models)</span>
+            <kbd class="shortcut-hint">M</kbd>
+          </button>
+
+          <div id="showroom-hud" class="showroom-hud" hidden>
+            <button type="button" id="btn-showroom-roll" class="btn-showroom-roll" title="Load a new random 3D model onto the oldest pedestal (Space)">
+              🎲 Roll New Exhibit <kbd class="shortcut-hint">Space</kbd>
+            </button>
+            <div class="pedestal-jump-group" role="group" aria-label="Jump to Pedestal">
+              <button type="button" class="pedestal-jump-btn active" data-slot="0" title="Walk to Pedestal 1 (Key 1)">#1</button>
+              <button type="button" class="pedestal-jump-btn" data-slot="1" title="Walk to Pedestal 2 (Key 2)">#2</button>
+              <button type="button" class="pedestal-jump-btn" data-slot="2" title="Walk to Pedestal 3 (Key 3)">#3</button>
+              <button type="button" class="pedestal-jump-btn" data-slot="3" title="Walk to Pedestal 4 (Key 4)">#4</button>
+            </div>
+            <a
+              id="showroom-dataset-link"
+              class="pedestal-jump-btn pedestal-action-link"
+              href="#"
+              target="_blank"
+              rel="noopener noreferrer"
+              title="Open Focused Exhibit's Hugging Face Dataset"
+            >📊 Dataset ↗</a>
+            <a
+              id="showroom-download-link"
+              class="pedestal-jump-btn pedestal-action-link"
+              href="#"
+              target="_blank"
+              rel="noopener noreferrer"
+              title="Download Focused Exhibit's 3D File"
+            >⬇️ Download 3D ↗</a>
+            <span class="showroom-hint">WASD / Arrows: Walk · Drag: Look · Click Pedestal/Plaque: Approach</span>
+          </div>
+        </div>
+
+        <!-- 3D-Anchored Museum Placard Cards Layer (Showroom Mode) -->
+        <div id="showroom-cards-layer" class="showroom-cards-layer" hidden></div>
+
+        <!-- Loading & Status Overlay -->
+        <div id="loading-overlay" class="loading-overlay">
+          <div class="spinner" aria-hidden="true"></div>
+          <p id="loading-title" class="loading-title">Sampling Seed 3D Datasets...</p>
+          <p id="loading-subtitle" class="loading-subtitle">Fetching 3D models from Hugging Face Hub</p>
+        </div>
+
+        <!-- Error / Empty Notice Toast -->
+        <div id="toast-banner" class="toast-banner" hidden role="status" aria-live="polite"></div>
+
+        <!-- Floating Bottom Viewport Controls -->
+        <div class="viewport-toolbar" role="toolbar" aria-label="3D Viewer Controls">
+          <button type="button" id="btn-idle-cycle" class="tool-btn active" aria-pressed="true" title="Toggle Auto-Load Next Model After 30s of Inactivity (I)">
+            <span id="idle-cycle-label">Idle Next: 30s</span>
+          </button>
+          <button type="button" id="btn-audio-toggle" class="tool-btn active" aria-pressed="true" hidden title="Toggle 3D Spatial Audio &amp; Footsteps (Showroom Mode)">
+            <span id="audio-toggle-label">🔊 Audio</span>
+          </button>
+          <button type="button" id="btn-autorotate" class="tool-btn active" aria-pressed="true" title="Toggle Auto-Rotate (A)">
+            <span>Auto-Rotate</span>
+          </button>
+          <button type="button" id="btn-wireframe" class="tool-btn" aria-pressed="false" title="Toggle Wireframe (W)">
+            <span>Wireframe</span>
+          </button>
+          <button type="button" id="btn-grid" class="tool-btn active" aria-pressed="true" title="Toggle Studio Floor (G)">
+            <span>Floor</span>
+          </button>
+          <button type="button" id="btn-flip-up" class="tool-btn" title="Rotate 90° X-axis for Z-up models (U)">
+            <span>Flip Y/Z Up</span>
+          </button>
+          <button type="button" id="btn-reset-cam" class="tool-btn" title="Reset Camera View (C)">
+            <span>Reset View</span>
+          </button>
+        </div>
+      </main>
+
+      <!-- Floating Control & Dataset Info Sidebar -->
+      <aside class="control-panel" aria-label="Hugging Face 3D Dataset &amp; Model Info">
+        <header class="panel-header">
+          <div class="brand-row">
+            <span class="hf-badge" aria-hidden="true">🤗 3D</span>
+            <div>
+              <h1>HF 3D Roulette</h1>
+              <p id="bg-discovery-status" class="tagline">Exploring Hugging Face 3D datasets</p>
+            </div>
+          </div>
+        </header>
+
+        <!-- Primary Random Actions -->
+        <section class="action-section">
+          <button type="button" id="btn-random" class="btn-primary">
+            <span class="dice-icon" aria-hidden="true">🎲</span>
+            <span>Random 3D Model</span>
+            <kbd class="shortcut-hint">Space</kbd>
+          </button>
+          <div class="secondary-actions">
+            <button
+              type="button"
+              id="btn-refresh-pool"
+              class="btn-secondary"
+              title="Merge background-discovered 3D datasets into the active pool"
+            >
+              Refresh Pool <span id="staged-badge" class="staged-badge" hidden>+0</span>
+            </button>
+          </div>
+        </section>
+
+        <!-- Dataset Information Card -->
+        <section class="metadata-card dataset-card">
+          <div class="card-header-row">
+            <h2 id="dataset-info-heading">Dataset Info</h2>
+            <span id="dataset-license-badge" class="license-pill" hidden>—</span>
+          </div>
+
+          <div class="dataset-title-block">
+            <a
+              id="dataset-repo-link"
+              href="#"
+              target="_blank"
+              rel="noopener noreferrer"
+              class="dataset-title-link"
+            >
+              —
+            </a>
+            <span id="dataset-author" class="dataset-author">by —</span>
+          </div>
+
+          <div class="dataset-metrics-row">
+            <span class="metric-chip" title="Hugging Face Likes">
+              ❤️ <strong id="dataset-likes">—</strong>
+            </span>
+            <span class="metric-chip" title="Monthly / Total Downloads">
+              ⬇️ <strong id="dataset-downloads">—</strong>
+            </span>
+            <span class="metric-chip" title="Sampled 3D files from this dataset">
+              🧊 <strong id="dataset-file-count">—</strong> sampled
+            </span>
+          </div>
+
+          <p id="dataset-description" class="dataset-description">
+            Loading dataset metadata from Hugging Face...
+          </p>
+
+          <div id="dataset-tags" class="dataset-tags" aria-label="Dataset tags"></div>
+        </section>
+
+        <!-- Current 3D Object Geometry Card -->
+        <section class="metadata-card">
+          <div class="card-header-row">
+            <h2 id="model-info-heading">Current 3D Object</h2>
+            <span id="model-format-badge" class="format-pill">—</span>
+          </div>
+
+          <div class="meta-details">
+            <div id="meta-title-block" class="meta-item" hidden>
+              <span class="meta-label">Object Title</span>
+              <span id="meta-object-title" class="meta-value" style="font-weight: 600;">—</span>
+              <span id="meta-object-subtitle" class="dataset-author" hidden>—</span>
+            </div>
+            <div class="meta-item">
+              <span class="meta-label">File Path</span>
+              <span id="meta-file-path" class="meta-value mono">—</span>
+            </div>
+            <div class="meta-stats-grid">
+              <div class="stat-box">
+                <span class="stat-label">Vertices</span>
+                <span id="stat-vertices" class="stat-value">—</span>
+              </div>
+              <div class="stat-box">
+                <span class="stat-label">Triangles</span>
+                <span id="stat-triangles" class="stat-value">—</span>
+              </div>
+              <div class="stat-box">
+                <span class="stat-label">Meshes</span>
+                <span id="stat-meshes" class="stat-value">—</span>
+              </div>
+              <div class="stat-box">
+                <span class="stat-label">File Size</span>
+                <span id="stat-size" class="stat-value">—</span>
+              </div>
+            </div>
+            <div class="meta-links-row">
+              <a
+                id="meta-download-link"
+                href="#"
+                target="_blank"
+                rel="noopener noreferrer"
+                class="btn-link"
+                hidden
+              >
+                Download 3D File ↗
+              </a>
+              <a
+                id="meta-hf-tree-link"
+                href="#"
+                target="_blank"
+                rel="noopener noreferrer"
+                class="btn-link"
+                hidden
+              >
+                Browse Dataset Files ↗
+              </a>
+            </div>
+          </div>
+        </section>
+
+        <!-- Deprioritized Debug Drawer: Search & Discovered Pool -->
+        <details class="debug-drawer">
+          <summary class="debug-summary">
+            <span>🛠️ Debug: Search &amp; Pool</span>
+            <span id="pool-count-badge" class="count-pill">0 files</span>
+          </summary>
+
+          <div class="debug-body">
+            <div class="memory-bar" aria-label="WebGL and Memory Telemetry">
+              <span>GPU Geoms: <strong id="mem-geoms">0</strong></span>
+              <span>GPU Tex: <strong id="mem-tex">0</strong></span>
+              <span>JS Heap: <strong id="mem-heap">—</strong></span>
+            </div>
+
+            <form id="search-form" class="filter-section">
+              <div class="field-group">
+                <label for="search-input">Search HF 3D Datasets</label>
+                <div class="search-row">
+                  <input
+                    type="search"
+                    id="search-input"
+                    placeholder="e.g. objaverse, furniture, robot..."
+                    autocomplete="off"
+                  />
+                  <button type="submit" class="btn-search">Add</button>
+                </div>
+              </div>
+
+              <div class="filter-grid">
+                <div class="field-group">
+                  <label for="repo-type-select">Source Type</label>
+                  <select id="repo-type-select">
+                    <option value="all" selected>All Sources</option>
+                    <option value="dataset">Datasets Only</option>
+                    <option value="model">Models Only</option>
+                  </select>
+                </div>
+
+                <div class="field-group">
+                  <label for="format-select">File Format</label>
+                  <select id="format-select">
+                    <option value="all" selected>All (.glb, .obj, .stl)</option>
+                    <option value="glb">.glb / .gltf</option>
+                    <option value="obj">.obj</option>
+                    <option value="stl">.stl</option>
+                  </select>
+                </div>
+              </div>
+            </form>
+
+            <ul
+              id="discovered-list"
+              class="discovered-list"
+              role="list"
+              aria-label="Discovered 3D files pool (debug)"
+            ></ul>
+          </div>
+        </details>
+      </aside>
+    </div>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
