@@ -887,7 +887,7 @@ export class HF3DDiscoveryService {
 
     // 1. Instantly hydrate from the local static manifest
     try {
-      const manifestRes = await fetch('/manifest-3d.json');
+      const manifestRes = await fetch(`${import.meta.env.BASE_URL}manifest-3d.json`);
       if (manifestRes.ok) {
         const manifestAssets: Discovered3DAsset[] = await manifestRes.json();
         if (Array.isArray(manifestAssets) && manifestAssets.length > 0) {
@@ -1220,7 +1220,7 @@ export class HF3DDiscoveryService {
   public async fetchWallArtworks(): Promise<WallArtworkItem[]> {
     // 1. Try static manifest first
     try {
-      const res = await fetch('/manifest-art.json');
+      const res = await fetch(`${import.meta.env.BASE_URL}manifest-art.json`);
       if (res.ok) {
         const items: WallArtworkItem[] = await res.json();
         if (Array.isArray(items) && items.length > 0) {

@@ -5,6 +5,8 @@ export default defineConfig(({ mode }) => {
   const geminiKey = env.VITE_GEMINI_API_KEY || env.GEMINI_API_KEY || '';
 
   return {
+    // Relative so the build works from a subfolder (ghostweather.com/apps/hf-3d-roulette/)
+    base: './',
     define: {
       'import.meta.env.VITE_GEMINI_API_KEY': JSON.stringify(geminiKey),
     },

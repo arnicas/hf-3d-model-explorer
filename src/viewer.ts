@@ -2057,11 +2057,13 @@ export class ThreeModelViewer {
       map.colorSpace = THREE.SRGBColorSpace;
       map.wrapS = THREE.RepeatWrapping;
       map.wrapT = THREE.RepeatWrapping;
+      map.repeat.set(2, 2);
       map.userData.isPersistentProcedural = true;
 
       const bumpMap = new THREE.CanvasTexture(bumpCanvas);
       bumpMap.wrapS = THREE.RepeatWrapping;
       bumpMap.wrapT = THREE.RepeatWrapping;
+      bumpMap.repeat.set(2, 2);
       bumpMap.userData.isPersistentProcedural = true;
 
       return { map, bumpMap };
@@ -2137,12 +2139,12 @@ export class ThreeModelViewer {
       }
     });
 
-    // 3. Brushed Damascus Chrome / Titanium (high-polish silver-iridium with swirling lathe grain)
+    // 3. Burnished Rose-Copper & Cobalt Damascus (warm copper-violet metallic swirl — never pale white!)
     const chromePair = makeCanvasPair((ctx, bumpCtx, w, h) => {
       const grad = ctx.createLinearGradient(0, 0, w, h);
-      grad.addColorStop(0, '#cbd5e1');
-      grad.addColorStop(0.5, '#f1f5f9');
-      grad.addColorStop(1, '#94a3b8');
+      grad.addColorStop(0, '#9a4432');
+      grad.addColorStop(0.5, '#c26444');
+      grad.addColorStop(1, '#3b425e');
       ctx.fillStyle = grad;
       ctx.fillRect(0, 0, w, h);
 
@@ -2154,15 +2156,19 @@ export class ThreeModelViewer {
         const y = Math.random() * h;
         const len = 24 + Math.random() * 80;
         ctx.strokeStyle =
-          i % 2 === 0 ? 'rgba(255, 255, 255, 0.22)' : 'rgba(51, 65, 85, 0.16)';
-        ctx.lineWidth = 0.9 + Math.random() * 1.5;
+          i % 3 === 0
+            ? 'rgba(245, 176, 120, 0.28)'
+            : i % 2 === 0
+              ? 'rgba(99, 102, 241, 0.20)'
+              : 'rgba(45, 22, 18, 0.24)';
+        ctx.lineWidth = 0.9 + Math.random() * 1.6;
         ctx.beginPath();
         ctx.moveTo(x, y);
         ctx.lineTo(x + len, y + Math.sin(y * 0.04) * 5);
         ctx.stroke();
 
-        bumpCtx.strokeStyle = i % 2 === 0 ? 'rgba(225,225,225,0.16)' : 'rgba(50,50,50,0.16)';
-        bumpCtx.lineWidth = 1;
+        bumpCtx.strokeStyle = i % 2 === 0 ? 'rgba(225,225,225,0.20)' : 'rgba(50,50,50,0.20)';
+        bumpCtx.lineWidth = 1.2;
         bumpCtx.beginPath();
         bumpCtx.moveTo(x, y);
         bumpCtx.lineTo(x + len, y + Math.sin(y * 0.04) * 5);
@@ -2236,10 +2242,10 @@ export class ThreeModelViewer {
       },
       chrome: {
         ...chromePair,
-        color: 0xf8fafc,
-        metalness: 0.92,
-        roughness: 0.16,
-        bumpScale: 0.012,
+        color: 0xffddd2,
+        metalness: 0.85,
+        roughness: 0.24,
+        bumpScale: 0.015,
       },
       marble: {
         ...marblePair,
@@ -2253,9 +2259,67 @@ export class ThreeModelViewer {
     return this.proceduralPresets;
   }
 
+  private texProbeCanvas?: HTMLCanvasElement;
+  private texProbeCtx?: CanvasRenderingContext2D | null;
+
   /**
-   * Checks whether a geometry's `color` attribute actually contains varying multi-color vertex painting
-   * (as opposed to uniform white/gray `COLOR_0` attributes exported by many AI 3D generators).
+   * Samples an image texture on an 8×8 grid to detect bleached-white / greyscale scan textures
+   * (such as white bones, skulls, corals, plaster casts, or 1×1 white dummy textures in GLBs)
+   * so they also receive a procedural patina instead of appearing stark white.
+   */
+  private isWhiteOrGrayTexture(tex: THREE.Texture | null | undefined): boolean {
+    if (!tex || !tex.image) return true;
+    const img = tex.image as HTMLImageElement | HTMLCanvasElement | ImageBitmap;
+    const w = (img as { width?: number }).width ?? 0;
+    const h = (img as { height?: number }).height ?? 0;
+    if (w === 0 || h === 0) return false;
+
+    try {
+      if (!this.texProbeCanvas) {
+        this.texProbeCanvas = document.createElement('canvas');
+        this.texProbeCanvas.width = 8;
+        this.texProbeCanvas.height = 8;
+        this.texProbeCtx = this.texProbeCanvas.getContext('2d', { willReadFrequently: true });
+      }
+      const ctx = this.texProbeCtx;
+      if (!ctx) return false;
+
+      ctx.clearRect(0, 0, 8, 8);
+      ctx.drawImage(img as CanvasImageSource, 0, 0, 8, 8);
+      const data = ctx.getImageData(0, 0, 8, 8).data;
+
+      let totalSat = 0;
+      let totalLuma = 0;
+      let count = 0;
+
+      for (let i = 0; i < data.length; i += 4) {
+        if (data[i + 3] < 32) continue;
+        const r = data[i] / 255;
+        const g = data[i + 1] / 255;
+        const b = data[i + 2] / 255;
+        const max = Math.max(r, g, b);
+        const min = Math.min(r, g, b);
+        const sat = max > 0.02 ? (max - min) / max : 0;
+        const luma = 0.299 * r + 0.587 * g + 0.114 * b;
+        totalSat += sat;
+        totalLuma += luma;
+        count++;
+      }
+
+      if (count === 0) return true;
+      const avgSat = totalSat / count;
+      const avgLuma = totalLuma / count;
+
+      // White, off-white, ivory/cream bone, coral, or grey plaster scan textures
+      return avgSat < 0.36 && avgLuma > 0.35;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Checks whether a geometry's `color` attribute actually contains multi-color vertex painting
+   * (as opposed to uniform white/gray `COLOR_0` attributes or greyscale vertex-baked ambient occlusion).
    */
   private hasVaryingVertexColors(geometry: THREE.BufferGeometry): boolean {
     const col = geometry.attributes.color;
@@ -2266,11 +2330,24 @@ export class ThreeModelViewer {
     const b0 = col.getZ(0);
     const step = Math.max(1, Math.floor(col.count / 48));
 
+    let hasColorVariation = false;
+    let hasChromaticSaturation =
+      Math.max(r0, g0, b0) - Math.min(r0, g0, b0) > 0.12;
+
     for (let i = step; i < col.count; i += step) {
-      const dr = Math.abs(col.getX(i) - r0);
-      const dg = Math.abs(col.getY(i) - g0);
-      const db = Math.abs(col.getZ(i) - b0);
+      const r = col.getX(i);
+      const g = col.getY(i);
+      const b = col.getZ(i);
+      const dr = Math.abs(r - r0);
+      const dg = Math.abs(g - g0);
+      const db = Math.abs(b - b0);
       if (dr > 0.05 || dg > 0.05 || db > 0.05) {
+        hasColorVariation = true;
+      }
+      if (Math.max(r, g, b) - Math.min(r, g, b) > 0.12) {
+        hasChromaticSaturation = true;
+      }
+      if (hasColorVariation && hasChromaticSaturation) {
         return true;
       }
     }
@@ -2279,12 +2356,28 @@ export class ThreeModelViewer {
 
   /**
    * Generates tri-planar / box-projected UV coordinates on untextured geometry
-   * so procedural patina textures and bump maps wrap cleanly across all 3 axes
-   * (even when an untextured GLB has missing or degenerate all-zero UVs).
+   * that lacks a `uv` attribute or has degenerate all-zero UVs, while preserving
+   * valid UV unwraps (such as Smithsonian scans with baked normal/AO maps).
    */
-  private ensureGeometryHasUVs(geometry: THREE.BufferGeometry, forceTriplanar = false): void {
-    if (geometry.attributes.uv && !forceTriplanar && geometry.userData?.hasTriplanarUVs) {
-      return;
+  private ensureGeometryHasUVs(geometry: THREE.BufferGeometry): void {
+    const existingUv = geometry.attributes.uv;
+    if (existingUv && existingUv.count > 0) {
+      let minU = Infinity;
+      let maxU = -Infinity;
+      let minV = Infinity;
+      let maxV = -Infinity;
+      const step = Math.max(1, Math.floor(existingUv.count / 48));
+      for (let i = 0; i < existingUv.count; i += step) {
+        const u = existingUv.getX(i);
+        const v = existingUv.getY(i);
+        if (u < minU) minU = u;
+        if (u > maxU) maxU = u;
+        if (v < minV) minV = v;
+        if (v > maxV) maxV = v;
+      }
+      if (maxU - minU > 0.02 || maxV - minV > 0.02) {
+        return;
+      }
     }
     const pos = geometry.attributes.position;
     if (!pos) return;
@@ -2327,8 +2420,6 @@ export class ThreeModelViewer {
     }
 
     geometry.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
-    geometry.userData = geometry.userData || {};
-    geometry.userData.hasTriplanarUVs = true;
   }
 
   /**
@@ -2338,36 +2429,46 @@ export class ThreeModelViewer {
   private upgradeDaisPieceMaterial(
     cMat: THREE.Material,
     geometry: THREE.BufferGeometry,
-    randomPatinaKey: 'bronze' | 'verdigris' | 'chrome' | 'marble'
+    randomPatinaKey: 'bronze' | 'verdigris' | 'chrome' | 'marble',
+    forcePatina = false
   ): THREE.Material {
     const std = cMat as THREE.MeshStandardMaterial;
     const presets = this.getProceduralPresets();
 
-    // Determine whether this mesh is untextured / plain white or gray (or already tagged as untextured patina)
-    const wasUntexturedPatina = Boolean(
-      cMat.userData?.isFallbackStudioMaterial || cMat.userData?.isUntexturedPatina
-    );
-    const hasTextureMap =
-      !wasUntexturedPatina && Boolean(std.map || std.emissiveMap || std.normalMap);
-    const hasVertexColors = this.hasVaryingVertexColors(geometry);
+    // Determine whether this mesh has a colorful diffuse/emissive texture
+    // (untextured meshes, normalMap-only bones, and bleached-white/ivory bone scan textures all get a patina!)
+    const wasUntexturedPatina =
+      forcePatina ||
+      Boolean(cMat.userData?.isFallbackStudioMaterial || cMat.userData?.isUntexturedPatina);
+    const hasRichColorTexture =
+      !wasUntexturedPatina &&
+      Boolean(
+        (std.map && !this.isWhiteOrGrayTexture(std.map)) ||
+          (std.emissiveMap && !this.isWhiteOrGrayTexture(std.emissiveMap))
+      );
+    const hasVertexColors = !wasUntexturedPatina && this.hasVaryingVertexColors(geometry);
     const hsl = { h: 0, s: 0, l: 1 };
     if (std.color && typeof std.color.getHSL === 'function') {
       std.color.getHSL(hsl);
     }
     const isPlainWhiteOrGray =
-      wasUntexturedPatina || (!hasTextureMap && !hasVertexColors && hsl.s < 0.25);
+      wasUntexturedPatina || (!hasRichColorTexture && !hasVertexColors && hsl.s < 0.35);
 
-    const isUntexturedSolidColor = !hasTextureMap && !hasVertexColors && !isPlainWhiteOrGray;
+    const isUntexturedSolidColor = !hasRichColorTexture && !hasVertexColors && !isPlainWhiteOrGray;
 
     if (this.daisFinishMode === 'auto-patina') {
       if (isPlainWhiteOrGray) {
-        // Replace untextured parts with the piece's random procedural museum patina
-        this.ensureGeometryHasUVs(geometry, true);
+        // Replace untextured / white-bone parts with the piece's random procedural museum patina
+        this.ensureGeometryHasUVs(geometry);
         const preset = presets[randomPatinaKey];
 
         std.map = preset.map;
-        std.bumpMap = preset.bumpMap;
-        std.bumpScale = preset.bumpScale;
+        std.metalnessMap = null;
+        std.roughnessMap = null;
+        if (!std.normalMap) {
+          std.bumpMap = preset.bumpMap;
+          std.bumpScale = preset.bumpScale;
+        }
         std.color?.setHex(preset.color);
         std.metalness = preset.metalness;
         std.roughness = preset.roughness;
@@ -2376,9 +2477,11 @@ export class ThreeModelViewer {
         std.needsUpdate = true;
       } else if (isUntexturedSolidColor) {
         // Give flat-colored untextured parts subtle metallic sheen and brushed bump grain
-        this.ensureGeometryHasUVs(geometry, true);
-        std.bumpMap = std.bumpMap || presets.bronze.bumpMap;
-        std.bumpScale = 0.012;
+        this.ensureGeometryHasUVs(geometry);
+        if (!std.normalMap) {
+          std.bumpMap = std.bumpMap || presets.bronze.bumpMap;
+          std.bumpScale = 0.012;
+        }
         std.metalness = Math.max(std.metalness ?? 0, 0.52);
         std.roughness = Math.min(std.roughness ?? 0.5, 0.32);
         std.needsUpdate = true;
@@ -2387,11 +2490,15 @@ export class ThreeModelViewer {
     }
 
     // Unified material finish override ('bronze' | 'chrome' | 'marble')
-    this.ensureGeometryHasUVs(geometry, true);
+    this.ensureGeometryHasUVs(geometry);
     const preset = presets[this.daisFinishMode];
     std.map = preset.map;
-    std.bumpMap = std.bumpMap || preset.bumpMap;
-    std.bumpScale = preset.bumpScale;
+    std.metalnessMap = null;
+    std.roughnessMap = null;
+    if (!std.normalMap) {
+      std.bumpMap = std.bumpMap || preset.bumpMap;
+      std.bumpScale = preset.bumpScale;
+    }
     std.color?.setHex(preset.color);
     std.metalness = preset.metalness;
     std.roughness = preset.roughness;
@@ -2701,8 +2808,14 @@ export class ThreeModelViewer {
       ];
       const randomPiecePatina =
         patinaChoices[Math.floor(Math.random() * patinaChoices.length)];
+      const assetMetaText = `${slot.asset.repoId} ${slot.asset.title} ${slot.asset.subtitle} ${slot.asset.path}`;
+      const isBoneOrCoralScan =
+        slot.asset.repoId.includes('smithsonian') ||
+        /bone|skull|cranium|skeleton|vertebra|mandible|femur|talus|cuneiform|humerus|tibia|ulna|radius|pelvis|scapula|rib|coral|acropora|montipora|fossil/i.test(
+          assetMetaText
+        );
 
-      // Clone material instances and apply procedural patina to any untextured/white meshes
+      // Clone material instances and apply procedural patina to any untextured/white/bone meshes
       clonedPiece.traverse((obj) => {
         obj.userData.slotIndex = DAIS_SLOT_INDEX;
         const mesh = obj as THREE.Mesh;
@@ -2715,7 +2828,8 @@ export class ThreeModelViewer {
               const cMat = this.upgradeDaisPieceMaterial(
                 m.clone(),
                 mesh.geometry,
-                randomPiecePatina
+                randomPiecePatina,
+                isBoneOrCoralScan
               );
               if ('wireframe' in cMat) {
                 (cMat as THREE.MeshStandardMaterial).wireframe = this.wireframeEnabled;
@@ -2727,7 +2841,8 @@ export class ThreeModelViewer {
             const cMat = this.upgradeDaisPieceMaterial(
               mesh.material.clone(),
               mesh.geometry,
-              randomPiecePatina
+              randomPiecePatina,
+              isBoneOrCoralScan
             );
             if ('wireframe' in cMat) {
               (cMat as THREE.MeshStandardMaterial).wireframe = this.wireframeEnabled;
@@ -2738,7 +2853,7 @@ export class ThreeModelViewer {
         }
       });
 
-      const pieceStats = this.computeStatsAndPrepareMeshes(clonedPiece);
+      const pieceStats = this.computeStatsAndPrepareMeshes(clonedPiece, false);
       totalVerts += pieceStats.vertices;
       totalTris += pieceStats.triangles;
       totalMeshes += pieceStats.meshes;
@@ -4204,7 +4319,7 @@ export class ThreeModelViewer {
       throw new Error('Load aborted');
     }
 
-    const stats = this.computeStatsAndPrepareMeshes(rootObject);
+    const stats = this.computeStatsAndPrepareMeshes(rootObject, false);
     if (stats.meshes === 0 || stats.vertices === 0) {
       this.disposeObject3D(rootObject);
       throw new Error('Loaded 3D file contained no valid mesh geometry.');
@@ -4408,10 +4523,32 @@ export class ThreeModelViewer {
     });
   }
 
-  private computeStatsAndPrepareMeshes(root: THREE.Object3D): LoadedModelStats {
+  private computeStatsAndPrepareMeshes(
+    root: THREE.Object3D,
+    applyPatina = true
+  ): LoadedModelStats {
     let vertices = 0;
     let triangles = 0;
     let meshes = 0;
+
+    if (!applyPatina) {
+      root.traverse((obj) => {
+        const mesh = obj as THREE.Mesh;
+        if (mesh.isMesh && mesh.geometry) {
+          meshes++;
+          const pos = mesh.geometry.attributes.position;
+          if (pos) {
+            vertices += pos.count;
+            if (mesh.geometry.index) {
+              triangles += Math.floor(mesh.geometry.index.count / 3);
+            } else {
+              triangles += Math.floor(pos.count / 3);
+            }
+          }
+        }
+      });
+      return { vertices, triangles, meshes };
+    }
 
     const presets = this.getProceduralPresets();
     const patinaKeys: Array<'bronze' | 'verdigris' | 'chrome' | 'marble'> = [
@@ -4424,15 +4561,19 @@ export class ThreeModelViewer {
 
     // First pass: check if this model is a multi-color low-poly asset (e.g., green leaves + brown trunk)
     const distinctColorHexes = new Set<number>();
-    let hasAnyTextureMap = false;
+    let hasAnyRichColorTexture = false;
     root.traverse((obj) => {
       const mesh = obj as THREE.Mesh;
       if (!mesh.isMesh || !mesh.material) return;
       const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
       for (const m of mats) {
         const std = m as THREE.MeshStandardMaterial;
-        if (std.map || std.emissiveMap || std.normalMap) {
-          hasAnyTextureMap = true;
+        const hasRichTex = Boolean(
+          (std.map && !this.isWhiteOrGrayTexture(std.map)) ||
+            (std.emissiveMap && !this.isWhiteOrGrayTexture(std.emissiveMap))
+        );
+        if (hasRichTex) {
+          hasAnyRichColorTexture = true;
         } else if (std.color) {
           distinctColorHexes.add(std.color.getHex());
         }
@@ -4458,8 +4599,11 @@ export class ThreeModelViewer {
         const upgradeMat = (m: THREE.Material): THREE.Material => {
           const std = m as THREE.MeshStandardMaterial;
           if (!std) return m;
-          const hasTex = Boolean(std.map || std.emissiveMap || std.normalMap);
-          if (hasTex || hasVaryingVC) return m;
+          const hasRichColorTex = Boolean(
+            (std.map && !this.isWhiteOrGrayTexture(std.map)) ||
+              (std.emissiveMap && !this.isWhiteOrGrayTexture(std.emissiveMap))
+          );
+          if (hasRichColorTex || hasVaryingVC) return m;
 
           const hsl = { h: 0, s: 0, l: 1 };
           if (std.color && typeof std.color.getHSL === 'function') {
@@ -4467,16 +4611,20 @@ export class ThreeModelViewer {
           }
           const isUntexturedTarget =
             Boolean(std.userData?.isFallbackStudioMaterial) ||
-            (!isMultiColorPalette && !hasAnyTextureMap) ||
-            hsl.s < 0.25;
+            (!isMultiColorPalette && !hasAnyRichColorTexture) ||
+            hsl.s < 0.28;
 
           if (isUntexturedTarget) {
             const cMat = std.clone();
-            this.ensureGeometryHasUVs(mesh.geometry, true);
+            this.ensureGeometryHasUVs(mesh.geometry);
             const preset = presets[modelPatinaKey];
             cMat.map = preset.map;
-            cMat.bumpMap = preset.bumpMap;
-            cMat.bumpScale = preset.bumpScale;
+            cMat.metalnessMap = null;
+            cMat.roughnessMap = null;
+            if (!cMat.normalMap) {
+              cMat.bumpMap = preset.bumpMap;
+              cMat.bumpScale = preset.bumpScale;
+            }
             cMat.color?.setHex(preset.color);
             cMat.metalness = preset.metalness;
             cMat.roughness = preset.roughness;

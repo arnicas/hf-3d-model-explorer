@@ -76,3 +76,6 @@ scratch/
 # Regenerating them hits the Hugging Face API and takes a long time / is
 # rate-limited, so they ship as static assets with the app.
 # Keep bun.lock committed too (dependency lockfile).
+
+# Personal deploy script (server details)
+deploy.sh
