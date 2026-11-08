@@ -37,7 +37,22 @@
               <button type="button" class="pedestal-jump-btn" data-slot="1" title="Walk to Pedestal 2 (Key 2)">#2</button>
               <button type="button" class="pedestal-jump-btn" data-slot="2" title="Walk to Pedestal 3 (Key 3)">#3</button>
               <button type="button" class="pedestal-jump-btn" data-slot="3" title="Walk to Pedestal 4 (Key 4)">#4</button>
+              <button type="button" class="pedestal-jump-btn" data-slot="4" title="Walk to Thought Piece (Key 5)">⚡ Thought Piece</button>
             </div>
+            <button
+              type="button"
+              id="btn-showroom-recollide"
+              class="pedestal-jump-btn pedestal-action-link"
+              hidden
+              title="Re-assemble 3 museum objects on the Thought Piece Dais with new random transforms (Key R)"
+            >💥 Re-Assemble <kbd class="shortcut-hint">R</kbd></button>
+            <button
+              type="button"
+              id="btn-showroom-assembly-mode"
+              class="pedestal-jump-btn pedestal-action-link"
+              hidden
+              title="Toggle Thought Piece between Vertical Totem Stack and Chaotic 3D Collision (Key T)"
+            >🗿 Mode: Totem <kbd class="shortcut-hint">T</kbd></button>
             <a
               id="showroom-dataset-link"
               class="pedestal-jump-btn pedestal-action-link"
@@ -148,18 +163,6 @@
             <span id="dataset-author" class="dataset-author">by —</span>
           </div>
 
-          <div class="dataset-metrics-row">
-            <span class="metric-chip" title="Hugging Face Likes">
-              ❤️ <strong id="dataset-likes">—</strong>
-            </span>
-            <span class="metric-chip" title="Monthly / Total Downloads">
-              ⬇️ <strong id="dataset-downloads">—</strong>
-            </span>
-            <span class="metric-chip" title="Sampled 3D files from this dataset">
-              🧊 <strong id="dataset-file-count">—</strong> sampled
-            </span>
-          </div>
-
           <p id="dataset-description" class="dataset-description">
             Loading dataset metadata from Hugging Face...
           </p>
@@ -227,62 +230,24 @@
           </div>
         </section>
 
-        <!-- Deprioritized Debug Drawer: Search & Discovered Pool -->
-        <details class="debug-drawer">
+        <!-- Collapsible About This Drawer -->
+        <details class="debug-drawer about-drawer">
           <summary class="debug-summary">
-            <span>🛠️ Debug: Search &amp; Pool</span>
-            <span id="pool-count-badge" class="count-pill">0 files</span>
+            <span>ℹ️ About This</span>
           </summary>
 
-          <div class="debug-body">
-            <div class="memory-bar" aria-label="WebGL and Memory Telemetry">
-              <span>GPU Geoms: <strong id="mem-geoms">0</strong></span>
-              <span>GPU Tex: <strong id="mem-tex">0</strong></span>
-              <span>JS Heap: <strong id="mem-heap">—</strong></span>
-            </div>
-
-            <form id="search-form" class="filter-section">
-              <div class="field-group">
-                <label for="search-input">Search HF 3D Datasets</label>
-                <div class="search-row">
-                  <input
-                    type="search"
-                    id="search-input"
-                    placeholder="e.g. objaverse, furniture, robot..."
-                    autocomplete="off"
-                  />
-                  <button type="submit" class="btn-search">Add</button>
-                </div>
-              </div>
-
-              <div class="filter-grid">
-                <div class="field-group">
-                  <label for="repo-type-select">Source Type</label>
-                  <select id="repo-type-select">
-                    <option value="all" selected>All Sources</option>
-                    <option value="dataset">Datasets Only</option>
-                    <option value="model">Models Only</option>
-                  </select>
-                </div>
-
-                <div class="field-group">
-                  <label for="format-select">File Format</label>
-                  <select id="format-select">
-                    <option value="all" selected>All (.glb, .obj, .stl)</option>
-                    <option value="glb">.glb / .gltf</option>
-                    <option value="obj">.obj</option>
-                    <option value="stl">.stl</option>
-                  </select>
-                </div>
-              </div>
-            </form>
-
-            <ul
-              id="discovered-list"
-              class="discovered-list"
-              role="list"
-              aria-label="Discovered 3D files pool (debug)"
-            ></ul>
+          <div class="debug-body about-body">
+            <p class="about-text">
+              This is a project by <strong>Lynn Cherny</strong> / <strong>@arnicas</strong>
+              (<a
+                href="https://ghostweather.com"
+                target="_blank"
+                rel="noopener noreferrer"
+                class="about-link"
+                >ghostweather.com ↗</a
+              >), made using <strong>Gemini Argon</strong> in <strong>Antigravity</strong> to
+              explore Hugging Face 3D assets. <a href="https://github.com/arnicas/hf-3d-model-explorer" target="_blank" rel="noopener noreferrer" class="about-link">Repo</a>.
+            </p>
           </div>
         </details>
       </aside>

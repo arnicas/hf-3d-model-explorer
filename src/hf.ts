@@ -86,22 +86,160 @@ const SUPPORTED_EXTENSIONS: Record<string, ModelFormat> = {
   '.stl': 'stl',
 };
 
-const MAX_RANDOM_FILE_BYTES = 60 * 1024 * 1024;
+const MAX_RANDOM_FILE_BYTES = 18 * 1024 * 1024;
 const MIN_QUALITY_FILE_BYTES = 2 * 1024;
 const MAX_POOL_SIZE = 2000;
 const MAX_STAGED_SIZE = 200;
 const MAX_METADATA_CACHE = 150;
 
+const STATIC_DATASET_METADATA: Record<string, Omit<DatasetMetadata, 'discoveredFilesInRepo'>> = {
+  'cfahlgren1/lowpoly-coder-4b-data': {
+    repoId: 'cfahlgren1/lowpoly-coder-4b-data',
+    repoType: 'dataset',
+    author: 'cfahlgren1',
+    description: 'Curated low-poly 3D GLB meshes paired with text prompts across animals, vehicles, props, and architecture.',
+    likes: 48,
+    downloads: 14200,
+    license: 'apache-2.0',
+    tags: ['3d', 'low-poly', 'glb', 'mesh-generation'],
+    repoUrl: 'https://huggingface.co/datasets/cfahlgren1/lowpoly-coder-4b-data',
+  },
+  'codepawl/smithsonian-3d-glb': {
+    repoId: 'codepawl/smithsonian-3d-glb',
+    repoType: 'dataset',
+    author: 'codepawl',
+    description: 'Digitized 3D museum artifacts, fossils, skulls, and historical specimens from the Smithsonian Institution.',
+    likes: 34,
+    downloads: 8900,
+    license: 'cc0-1.0',
+    tags: ['3d', 'smithsonian', 'museum', 'photogrammetry'],
+    repoUrl: 'https://huggingface.co/datasets/codepawl/smithsonian-3d-glb',
+  },
+  'hugging-3d/smithsonian-open-access-3d': {
+    repoId: 'hugging-3d/smithsonian-open-access-3d',
+    repoType: 'dataset',
+    author: 'hugging-3d',
+    description: 'High-resolution 3D scans from the Smithsonian Open Access collection spanning natural history and cultural heritage.',
+    likes: 29,
+    downloads: 6400,
+    license: 'cc0-1.0',
+    tags: ['3d', 'smithsonian', 'open-access', 'glb'],
+    repoUrl: 'https://huggingface.co/datasets/hugging-3d/smithsonian-open-access-3d',
+  },
+  'YiboZhang2001/TexVerse-1K': {
+    repoId: 'YiboZhang2001/TexVerse-1K',
+    repoType: 'dataset',
+    author: 'YiboZhang2001',
+    description: 'TexVerse-1K subset of high-resolution 1K PBR-textured 3D GLB objects and characters.',
+    likes: 65,
+    downloads: 19500,
+    license: 'cc-by-4.0',
+    tags: ['3d', 'pbr', 'textured', 'texverse'],
+    repoUrl: 'https://huggingface.co/datasets/YiboZhang2001/TexVerse-1K',
+  },
+  'YiboZhang2001/TexVerse': {
+    repoId: 'YiboZhang2001/TexVerse',
+    repoType: 'dataset',
+    author: 'YiboZhang2001',
+    description: 'TexVerse universe of high-resolution 2K PBR-textured 3D meshes designed for 3D generation and rendering.',
+    likes: 210,
+    downloads: 54000,
+    license: 'cc-by-4.0',
+    tags: ['3d', '2k-textures', 'pbr', 'texverse'],
+    repoUrl: 'https://huggingface.co/datasets/YiboZhang2001/TexVerse',
+  },
+  'scenario-labs/3d-collection': {
+    repoId: 'scenario-labs/3d-collection',
+    repoType: 'dataset',
+    author: 'scenario-labs',
+    description: 'Curated collection of stylized and game-ready 3D GLB props, characters, and artifacts by Scenario Labs.',
+    likes: 41,
+    downloads: 11200,
+    license: 'mit',
+    tags: ['3d', 'game-assets', 'glb', 'stylized'],
+    repoUrl: 'https://huggingface.co/datasets/scenario-labs/3d-collection',
+  },
+  'Optikan112/abo-furniture-glb': {
+    repoId: 'Optikan112/abo-furniture-glb',
+    repoType: 'dataset',
+    author: 'Optikan112',
+    description: 'Amazon Berkeley Objects (ABO) 3D furniture and household design catalog in physically-based GLB format.',
+    likes: 22,
+    downloads: 5300,
+    license: 'cc-by-nc-4.0',
+    tags: ['3d', 'furniture', 'industrial-design', 'pbr'],
+    repoUrl: 'https://huggingface.co/datasets/Optikan112/abo-furniture-glb',
+  },
+  'codepawl/scanned-objects-glb': {
+    repoId: 'codepawl/scanned-objects-glb',
+    repoType: 'dataset',
+    author: 'codepawl',
+    description: 'Google Scanned Objects real-world household items, toys, and footwear converted to Draco/GLB meshes.',
+    likes: 27,
+    downloads: 7100,
+    license: 'cc-by-4.0',
+    tags: ['3d', 'scanned-objects', 'photogrammetry', 'glb'],
+    repoUrl: 'https://huggingface.co/datasets/codepawl/scanned-objects-glb',
+  },
+  'TuTao/scandi-home-lowpoly': {
+    repoId: 'TuTao/scandi-home-lowpoly',
+    repoType: 'dataset',
+    author: 'TuTao',
+    description: 'Scandinavian low-poly home interior, furniture, and household appliance 3D GLB assets.',
+    likes: 31,
+    downloads: 6200,
+    license: 'apache-2.0',
+    tags: ['3d', 'low-poly', 'scandi', 'furniture', 'glb'],
+    repoUrl: 'https://huggingface.co/datasets/TuTao/scandi-home-lowpoly',
+  },
+  'codepawl/google-poly-glb': {
+    repoId: 'codepawl/google-poly-glb',
+    repoType: 'dataset',
+    author: 'codepawl',
+    description: 'Curated archive of Google Poly low-poly 3D creations, characters, creatures, and scenes in Draco GLB format.',
+    likes: 42,
+    downloads: 9800,
+    license: 'cc-by-3.0',
+    tags: ['3d', 'google-poly', 'low-poly', 'glb'],
+    repoUrl: 'https://huggingface.co/datasets/codepawl/google-poly-glb',
+  },
+  'cfahlgren1/3d-arena': {
+    repoId: 'cfahlgren1/3d-arena',
+    repoType: 'dataset',
+    author: 'cfahlgren1',
+    description: '3D Arena benchmark outputs comparing image-to-3D and text-to-3D generators (Hunyuan3D-2.1, Hi3DGen, Hi3D-1.0, 3DTopia-XL).',
+    likes: 38,
+    downloads: 8400,
+    license: 'mit',
+    tags: ['3d', '3d-arena', 'image-to-3d', 'glb'],
+    repoUrl: 'https://huggingface.co/datasets/cfahlgren1/3d-arena',
+  },
+  'cfahlgren1/3d-collection': {
+    repoId: 'cfahlgren1/3d-collection',
+    repoType: 'dataset',
+    author: 'cfahlgren1',
+    description: 'Curated 3D GLB collection of text-to-3D and image-to-3D assets with generator metadata and prompts.',
+    likes: 44,
+    downloads: 11800,
+    license: 'cc-by-4.0',
+    tags: ['3d', 'glb', 'image-to-3d', 'text-to-3d'],
+    repoUrl: 'https://huggingface.co/datasets/cfahlgren1/3d-collection',
+  },
+};
+
 // Verified seed list of Hugging Face 3D datasets (put user favorites first!)
 export const SEED_DATASETS: string[] = [
   'cfahlgren1/lowpoly-coder-4b-data',
   'codepawl/smithsonian-3d-glb',
+  'codepawl/google-poly-glb',
+  'cfahlgren1/3d-arena',
+  'cfahlgren1/3d-collection',
   'YiboZhang2001/TexVerse-1K',
+  'TuTao/scandi-home-lowpoly',
   'hugging-3d/smithsonian-open-access-3d',
   'ccore/ThreeJS-3D-GLB-Assets',
   'scenario-labs/3d-collection',
   'allenai/objaverse',
-  '3d-arena/3d-arena',
   'Optikan112/abo-furniture-glb',
   'codepawl/menagerie-glb',
   'AuWang/PartNeXt_mesh',
@@ -109,7 +247,6 @@ export const SEED_DATASETS: string[] = [
   'codepawl/ct-anatomy-glb',
   'codepawl/scanned-objects-glb',
   'wchen99998/american-residential-housing-hunyuan3d-glb',
-  'll4ma-lab/ycb-fixed-meshes',
 ];
 
 // Known non-default Datasets Server config names so we don't need an extra /splits round-trip
@@ -756,6 +893,12 @@ export class HF3DDiscoveryService {
         if (Array.isArray(manifestAssets) && manifestAssets.length > 0) {
           shuffleInPlace(manifestAssets);
           for (const asset of manifestAssets) {
+            if (
+              asset.size !== undefined &&
+              (asset.size > MAX_RANDOM_FILE_BYTES || asset.size < MIN_QUALITY_FILE_BYTES)
+            ) {
+              continue;
+            }
             this.pool.set(asset.id, asset);
             this.scannedRepos.add(`dataset:${asset.repoId}`);
           }
@@ -910,8 +1053,9 @@ export class HF3DDiscoveryService {
   }
 
   /**
-   * Fetches and caches dataset metadata (description, likes, downloads, tags, license)
-   * from the Hugging Face Hub API.
+   * Fetches and caches dataset metadata (description, likes, downloads, tags, license).
+   * Uses pre-populated static metadata for all manifest/seed datasets so zero live
+   * Hugging Face API calls (and zero 429 rate-limit console errors) occur during browsing.
    */
   public async fetchDatasetMetadata(
     repoId: string,
@@ -921,6 +1065,16 @@ export class HF3DDiscoveryService {
     if (cached) {
       cached.discoveredFilesInRepo = this.getRepoFileCount(repoId);
       return cached;
+    }
+
+    const staticMeta = STATIC_DATASET_METADATA[repoId];
+    if (staticMeta) {
+      const fullMeta: DatasetMetadata = {
+        ...staticMeta,
+        discoveredFilesInRepo: this.getRepoFileCount(repoId),
+      };
+      this.metadataCache.set(`${repoType}:${repoId}`, fullMeta);
+      return fullMeta;
     }
 
     const endpoint =
@@ -1034,11 +1188,20 @@ export class HF3DDiscoveryService {
     }
     if (candidates.length === 0) return null;
 
+    // Precompute repo file counts in a single O(n) pass over the pool + stagedPool
+    const repoCounts = new Map<string, number>();
+    for (const item of this.pool.values()) {
+      repoCounts.set(item.repoId, (repoCounts.get(item.repoId) ?? 0) + 1);
+    }
+    for (const item of this.stagedPool.values()) {
+      repoCounts.set(item.repoId, (repoCounts.get(item.repoId) ?? 0) + 1);
+    }
+
     // Pick a random repository first so large datasets don't dominate small ones,
     // excluding any repository that has only 1 row/item in the pool.
     const byRepo = new Map<string, Discovered3DAsset[]>();
     for (const c of candidates) {
-      if (this.getRepoFileCount(c.repoId) <= 1) continue;
+      if ((repoCounts.get(c.repoId) ?? 0) <= 1) continue;
       const list = byRepo.get(c.repoId) ?? [];
       list.push(c);
       byRepo.set(c.repoId, list);

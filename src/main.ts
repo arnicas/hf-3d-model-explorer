@@ -7,7 +7,7 @@ import {
   type SearchFilterOptions,
   type WallArtworkItem,
 } from './hf';
-import { ThreeModelViewer } from './viewer';
+import { DAIS_SLOT_INDEX, ThreeModelViewer } from './viewer';
 // import { generateVisitorWhispersForExhibit } from './gemini-visitor';
 
 const appRoot = document.getElementById('app') as HTMLElement;
@@ -25,6 +25,10 @@ const modeToggleIcon = document.getElementById('mode-toggle-icon') as HTMLElemen
 const modeToggleText = document.getElementById('mode-toggle-text') as HTMLElement;
 const showroomHud = document.getElementById('showroom-hud') as HTMLElement;
 const btnShowroomRoll = document.getElementById('btn-showroom-roll') as HTMLButtonElement;
+const btnShowroomRecollide = document.getElementById('btn-showroom-recollide') as HTMLButtonElement;
+const btnShowroomAssemblyMode = document.getElementById(
+  'btn-showroom-assembly-mode'
+) as HTMLButtonElement;
 const showroomCardsLayer = document.getElementById('showroom-cards-layer') as HTMLElement;
 const showroomDatasetLink = document.getElementById('showroom-dataset-link') as HTMLAnchorElement;
 const showroomDownloadLink = document.getElementById('showroom-download-link') as HTMLAnchorElement;
@@ -40,9 +44,6 @@ const stagedBadge = document.getElementById('staged-badge') as HTMLElement;
 const datasetLicenseBadge = document.getElementById('dataset-license-badge') as HTMLElement;
 const datasetRepoLink = document.getElementById('dataset-repo-link') as HTMLAnchorElement;
 const datasetAuthor = document.getElementById('dataset-author') as HTMLElement;
-const datasetLikes = document.getElementById('dataset-likes') as HTMLElement;
-const datasetDownloads = document.getElementById('dataset-downloads') as HTMLElement;
-const datasetFileCount = document.getElementById('dataset-file-count') as HTMLElement;
 const datasetDescription = document.getElementById('dataset-description') as HTMLElement;
 const datasetTags = document.getElementById('dataset-tags') as HTMLElement;
 
@@ -59,16 +60,16 @@ const statSize = document.getElementById('stat-size') as HTMLElement;
 const metaDownloadLink = document.getElementById('meta-download-link') as HTMLAnchorElement;
 const metaHfTreeLink = document.getElementById('meta-hf-tree-link') as HTMLAnchorElement;
 
-// Debug Drawer & Memory Telemetry Elements
-const memGeoms = document.getElementById('mem-geoms') as HTMLElement;
-const memTex = document.getElementById('mem-tex') as HTMLElement;
-const memHeap = document.getElementById('mem-heap') as HTMLElement;
-const searchForm = document.getElementById('search-form') as HTMLFormElement;
-const searchInput = document.getElementById('search-input') as HTMLInputElement;
-const repoTypeSelect = document.getElementById('repo-type-select') as HTMLSelectElement;
-const formatSelect = document.getElementById('format-select') as HTMLSelectElement;
-const poolCountBadge = document.getElementById('pool-count-badge') as HTMLElement;
-const discoveredList = document.getElementById('discovered-list') as HTMLUListElement;
+// Optional Debug Drawer & Memory Telemetry Elements
+const memGeoms = document.getElementById('mem-geoms');
+const memTex = document.getElementById('mem-tex');
+const memHeap = document.getElementById('mem-heap');
+const searchForm = document.getElementById('search-form') as HTMLFormElement | null;
+const searchInput = document.getElementById('search-input') as HTMLInputElement | null;
+const repoTypeSelect = document.getElementById('repo-type-select') as HTMLSelectElement | null;
+const formatSelect = document.getElementById('format-select') as HTMLSelectElement | null;
+const poolCountBadge = document.getElementById('pool-count-badge');
+const discoveredList = document.getElementById('discovered-list') as HTMLUListElement | null;
 
 // Viewport Toolbar
 const btnIdleCycle = document.getElementById('btn-idle-cycle') as HTMLButtonElement;
@@ -97,9 +98,41 @@ let isBackgroundCrawling = false;
 let toastTimer: number | null = null;
 
 function updateFocusedPedestalUI(slotIndex: number): void {
+  const showDaisControls = slotIndex === DAIS_SLOT_INDEX && viewer.isInDaisProximity();
+  btnShowroomRecollide.hidden = !showDaisControls;
+  btnShowroomAssemblyMode.hidden = !showDaisControls;
+
   for (const btn of pedestalJumpButtons) {
     const idx = Number(btn.dataset.slot);
     btn.classList.toggle('active', idx === slotIndex);
+  }
+  if (slotIndex === DAIS_SLOT_INDEX) {
+    const daisInfo = viewer.getDaisInfo();
+    const firstAsset = daisInfo.sourceAssets[0];
+    if (firstAsset) {
+      const plinthLabels = daisInfo.sourceSlotIndices.map((i) => `#${i + 1}`).join('+');
+      showroomDatasetLink.href = firstAsset.repoUrl;
+      showroomDatasetLink.textContent = daisInfo.sculptureName
+        ? `⚡ “${daisInfo.sculptureName}” (${plinthLabels}) ↗`
+        : `⚡ Thought Piece (${plinthLabels}) ↗`;
+      showroomDownloadLink.href = firstAsset.downloadUrl;
+      showroomDownloadLink.textContent = `⚡ Primary 3D ↗`;
+
+      if (daisInfo.sculptureName) {
+        metaObjectTitle.textContent = `“${daisInfo.sculptureName}”`;
+        metaTitleBlock.hidden = false;
+        metaObjectSubtitle.textContent = daisInfo.sourceAssets
+          .map((a) => a.title || a.filename)
+          .join(' × ');
+        metaObjectSubtitle.hidden = false;
+      }
+    } else {
+      showroomDatasetLink.removeAttribute('href');
+      showroomDatasetLink.textContent = '⚡ Under construction';
+      showroomDownloadLink.removeAttribute('href');
+      showroomDownloadLink.textContent = '⏳ Assembling…';
+    }
+    return;
   }
   const slotInfo = viewer.getSlotInfo(slotIndex);
   if (slotInfo?.asset) {
@@ -117,6 +150,12 @@ function updateFocusedPedestalUI(slotIndex: number): void {
 
 viewer.setCallbacks({
   onPedestalSelect: (slotIdx) => updateFocusedPedestalUI(slotIdx),
+  onDaisSculptureNamed: (sculptureName) => {
+    if (viewer.getFocusedSlotIndex() === DAIS_SLOT_INDEX) {
+      updateFocusedPedestalUI(DAIS_SLOT_INDEX);
+    }
+    showToast(`✦ Thought Piece Named: “${sculptureName}”`);
+  },
 });
 
 function resetIdleTimer(): void {
@@ -133,6 +172,7 @@ function updateIdleButtonUI(): void {
 }
 
 function updateMemoryTelemetryUI(): void {
+  if (!memGeoms || !memTex || !memHeap) return;
   const stats = viewer.getMemoryStats();
   memGeoms.textContent = String(stats.gpuGeometries);
   memTex.textContent = String(stats.gpuTextures);
@@ -141,9 +181,9 @@ function updateMemoryTelemetryUI(): void {
 
 function getFilterOptions(): SearchFilterOptions {
   return {
-    query: searchInput.value.trim(),
-    repoType: (repoTypeSelect.value as SearchFilterOptions['repoType']) || 'all',
-    format: (formatSelect.value as SearchFilterOptions['format']) || 'all',
+    query: searchInput?.value.trim() || '',
+    repoType: (repoTypeSelect?.value as SearchFilterOptions['repoType']) || 'all',
+    format: (formatSelect?.value as SearchFilterOptions['format']) || 'all',
   };
 }
 
@@ -201,10 +241,6 @@ function renderDatasetMetadata(meta: DatasetMetadata): void {
   datasetRepoLink.textContent = meta.repoId;
   datasetRepoLink.href = meta.repoUrl;
   datasetAuthor.textContent = `by ${meta.author}`;
-
-  datasetLikes.textContent = meta.likes.toLocaleString();
-  datasetDownloads.textContent = meta.downloads.toLocaleString();
-  datasetFileCount.textContent = meta.discoveredFilesInRepo.toLocaleString();
   datasetDescription.textContent = meta.description;
 
   if (meta.license) {
@@ -226,9 +262,12 @@ function renderDatasetMetadata(meta: DatasetMetadata): void {
 function renderPoolList(): void {
   const filters = getFilterOptions();
   const pool = discovery.getPool(filters);
-  poolCountBadge.textContent = `${pool.length} ${pool.length === 1 ? 'file' : 'files'}`;
+  if (poolCountBadge) {
+    poolCountBadge.textContent = `${pool.length} ${pool.length === 1 ? 'file' : 'files'}`;
+  }
   updateStagedUI();
 
+  if (!discoveredList) return;
   discoveredList.innerHTML = '';
   const slice = pool.slice(0, 60);
   for (const asset of slice) {
@@ -488,7 +527,8 @@ async function loadRandomModel(options?: {
       options?.focusOnLoad ?? true
     );
     if (ok) {
-      if (discovery.getStagedCount() < 40) {
+      // Only crawl live Hub API in background if the static manifest pool is nearly empty
+      if (matchingPool.length < 40 && discovery.getStagedCount() < 40) {
         void triggerBackgroundDiscoveryWave();
       }
       return;
@@ -517,23 +557,42 @@ async function toggleViewerMode(): Promise<void> {
     modeToggleText.textContent = 'Return to Studio View';
 
     // Sync any recent models loaded while in Studio Mode onto the pedestals first
-    for (const histAsset of [...recentHistory]) {
-      if (viewer.findSlotWithAsset(histAsset) === -1) {
-        await loadSpecificAsset(histAsset, undefined, false);
-      }
+    const recentToLoad = [...recentHistory].filter(
+      (histAsset) => viewer.findSlotWithAsset(histAsset) === -1
+    );
+    for (let i = 0; i < recentToLoad.length && i < 4; i++) {
+      await loadSpecificAsset(recentToLoad[i], i, false);
     }
 
-    // Populate any remaining empty pedestals so all 4 museum plinths have unique exhibits!
+    // Populate any remaining empty pedestals in PARALLEL from the curated manifest pool
+    const emptySlotIndices: number[] = [];
     for (let slotIdx = 0; slotIdx < 4; slotIdx++) {
       const info = viewer.getSlotInfo(slotIdx);
       if (!info?.asset) {
-        await loadRandomModel({ targetPedestalSlot: slotIdx, focusOnLoad: false });
+        emptySlotIndices.push(slotIdx);
       }
     }
-    const latestSlotIdx = viewer.getFocusedSlotIndex();
-    viewer.focusPedestal(latestSlotIdx, true);
-    updateFocusedPedestalUI(latestSlotIdx);
-    showToast('Showroom Mode: Walk with WASD / Arrows or click any pedestal (#1–#4) to inspect!');
+
+    if (emptySlotIndices.length > 0) {
+      const filters = getFilterOptions();
+      const reserved: Discovered3DAsset[] = [...getActiveSetAssets()];
+      await Promise.all(
+        emptySlotIndices.map(async (slotIdx) => {
+          for (let attempt = 1; attempt <= 4; attempt++) {
+            const candidate = discovery.pickRandom(filters, reserved);
+            if (!candidate) break;
+            reserved.push(candidate);
+            const ok = await loadSpecificAsset(candidate, slotIdx, false);
+            if (ok) break;
+          }
+        })
+      );
+    }
+
+    viewer.rebuildDaisCollision(true);
+    viewer.focusPedestal(DAIS_SLOT_INDEX, true);
+    updateFocusedPedestalUI(DAIS_SLOT_INDEX);
+    showToast('Showroom Mode: Thought Piece active! Press R to re-assemble.');
   } else {
     modeToggleIcon.textContent = '🏛️';
     modeToggleText.textContent = 'Showroom View (4 Models)';
@@ -580,6 +639,36 @@ btnShowroomRoll.addEventListener('click', () => {
   void loadRandomModel();
 });
 
+btnShowroomRecollide.addEventListener('click', () => {
+  resetIdleTimer();
+  const ok = viewer.rebuildDaisCollision(true);
+  if (ok) {
+    viewer.focusPedestal(DAIS_SLOT_INDEX, true);
+    updateFocusedPedestalUI(DAIS_SLOT_INDEX);
+    const info = viewer.getDaisInfo();
+    const names = info.sourceAssets.map((a) => a.title || a.filename).join(' × ');
+    showToast(`⚡ Re-Assembled Thought Piece: ${names}`);
+  } else {
+    showToast('Load at least 2 models onto the pedestals first!');
+  }
+});
+
+btnShowroomAssemblyMode.addEventListener('click', () => {
+  resetIdleTimer();
+  const nextMode = viewer.toggleDaisAssemblyMode();
+  btnShowroomAssemblyMode.innerHTML =
+    nextMode === 'totem'
+      ? '🗿 Mode: Totem <kbd class="shortcut-hint">T</kbd>'
+      : '💥 Mode: Collision <kbd class="shortcut-hint">T</kbd>';
+  viewer.focusPedestal(DAIS_SLOT_INDEX, true);
+  updateFocusedPedestalUI(DAIS_SLOT_INDEX);
+  showToast(
+    nextMode === 'totem'
+      ? '🗿 Thought Piece switched to Vertical Totem Stack!'
+      : '💥 Thought Piece switched to Chaotic 3D Collision!'
+  );
+});
+
 for (const btn of pedestalJumpButtons) {
   btn.addEventListener('click', () => {
     const slotIdx = Number(btn.dataset.slot);
@@ -596,17 +685,17 @@ btnRefreshPool.addEventListener('click', () => {
   void handleRefreshPool();
 });
 
-searchForm.addEventListener('submit', (e) => {
+searchForm?.addEventListener('submit', (e) => {
   e.preventDefault();
   void loadRandomModel({ forceNewHubSearch: true });
 });
 
-repoTypeSelect.addEventListener('change', () => {
+repoTypeSelect?.addEventListener('change', () => {
   renderPoolList();
   void loadRandomModel();
 });
 
-formatSelect.addEventListener('change', () => {
+formatSelect?.addEventListener('change', () => {
   renderPoolList();
   void loadRandomModel();
 });
@@ -723,14 +812,18 @@ window.addEventListener('keydown', (e) => {
     btnFlipUp.click();
   } else if (e.key === 'c' || e.key === 'C') {
     btnResetCam.click();
-  } else if (inShowroom && ['1', '2', '3', '4'].includes(e.key)) {
+  } else if (inShowroom && (e.key === 'r' || e.key === 'R')) {
+    btnShowroomRecollide.click();
+  } else if (inShowroom && (e.key === 't' || e.key === 'T')) {
+    btnShowroomAssemblyMode.click();
+  } else if (inShowroom && ['1', '2', '3', '4', '5'].includes(e.key)) {
     const slotIdx = Number(e.key) - 1;
     viewer.focusPedestal(slotIdx, true);
     updateFocusedPedestalUI(slotIdx);
   }
 });
 
-// Start from seed datasets and kick off background discovery + wall paintings
+// Start from static manifest (`public/manifest-3d.json`) + wall paintings with zero live HF API calls
 async function bootstrap(): Promise<void> {
   updateIdleButtonUI();
   void discovery.fetchWallArtworks().then((artworks) => {
@@ -738,9 +831,6 @@ async function bootstrap(): Promise<void> {
     void viewer.applyWallArtworks(wallArtPool, false);
   });
   await loadRandomModel();
-  window.setTimeout(() => {
-    void triggerBackgroundDiscoveryWave();
-  }, 2500);
 }
 
 void bootstrap();

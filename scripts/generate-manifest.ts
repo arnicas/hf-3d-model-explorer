@@ -29,7 +29,24 @@ interface Discovered3DAsset {
   treeUrl: string;
 }
 
-const SEED_TARGETS = [
+interface SeedTarget {
+  repoId: string;
+  config?: string;
+  split?: string;
+  samples?: number;
+  offsets?: number[];
+  isGitTree?: boolean;
+  /** Only include files whose path starts with this prefix (git-tree targets). */
+  pathPrefix?: string;
+  /** Only include files whose path contains this substring (git-tree targets). */
+  pathIncludes?: string;
+  /** Skip files larger than this (git-tree targets); keeps the viewer responsive. */
+  maxSizeBytes?: number;
+  /** Skip files smaller than this (git-tree targets); avoids degenerate meshes. */
+  minSizeBytes?: number;
+}
+
+const SEED_TARGETS: SeedTarget[] = [
   {
     repoId: 'cfahlgren1/lowpoly-coder-4b-data',
     config: 'stage1',
@@ -45,6 +62,13 @@ const SEED_TARGETS = [
     offsets: [0, 200, 600, 1200, 2000, 2800],
   },
   {
+    repoId: 'codepawl/google-poly-glb',
+    config: 'default',
+    split: 'train',
+    samples: 100,
+    offsets: [0, 300, 900, 2000],
+  },
+  {
     repoId: 'ccore/ThreeJS-3D-GLB-Assets',
     config: 'meshes',
     split: 'train',
@@ -52,11 +76,11 @@ const SEED_TARGETS = [
     offsets: [0],
   },
   {
-    repoId: 'scenario-labs/3d-collection',
+    repoId: 'cfahlgren1/3d-collection',
     config: 'default',
     split: 'train',
-    samples: 80,
-    offsets: [0, 150, 400],
+    samples: 100,
+    offsets: [0, 140, 280, 440, 620, 820, 1020, 1220],
   },
   {
     repoId: 'hugging-3d/smithsonian-open-access-3d',
@@ -72,14 +96,29 @@ const SEED_TARGETS = [
     samples: 100,
   },
   {
+    // Full TexVerse: 858K objects w/ high-res textures. Only pull the 2K tier
+    // (glbs_2k) and skip anything over 15MB so models load in <1s in the browser.
+    repoId: 'YiboZhang2001/TexVerse',
+    isGitTree: true,
+    pathPrefix: 'glbs/glbs_2k/',
+    maxSizeBytes: 15 * 1024 * 1024,
+    samples: 60,
+  },
+  {
     repoId: 'Optikan112/abo-furniture-glb',
     isGitTree: true,
     samples: 40,
   },
   {
-    repoId: 'll4ma-lab/ycb-fixed-meshes',
+    repoId: 'TuTao/scandi-home-lowpoly',
     isGitTree: true,
-    samples: 40,
+    samples: 120,
+  },
+  {
+    repoId: 'cfahlgren1/3d-arena',
+    isGitTree: true,
+    pathPrefix: 'outputs/',
+    samples: 120,
   },
   {
     repoId: 'codepawl/scanned-objects-glb',
@@ -169,7 +208,7 @@ function buildAsset(
   };
 }
 
-async function processDatasetServerTarget(target: typeof SEED_TARGETS[0]): Promise<Discovered3DAsset[]> {
+async function processDatasetServerTarget(target: SeedTarget): Promise<Discovered3DAsset[]> {
   const assets: Discovered3DAsset[] = [];
   const repoId = target.repoId;
   const config = target.config || 'default';
@@ -256,7 +295,7 @@ async function processDatasetServerTarget(target: typeof SEED_TARGETS[0]): Promi
   return assets;
 }
 
-async function processGitTreeTarget(target: typeof SEED_TARGETS[0]): Promise<Discovered3DAsset[]> {
+async function processGitTreeTarget(target: SeedTarget): Promise<Discovered3DAsset[]> {
   const assets: Discovered3DAsset[] = [];
   const repoId = target.repoId;
   console.log(`\n⏳ Listing files in git tree for "${repoId}"...`);
@@ -274,6 +313,11 @@ async function processGitTreeTarget(target: typeof SEED_TARGETS[0]): Promise<Dis
       if (entry.type !== 'file') continue;
       const lower = entry.path.toLowerCase();
       if (!lower.endsWith('.glb') && !lower.endsWith('.gltf') && !lower.endsWith('.obj')) continue;
+      if (target.pathPrefix && !entry.path.startsWith(target.pathPrefix)) continue;
+      if (target.pathIncludes && !entry.path.includes(target.pathIncludes)) continue;
+      const bytes = (entry as { size?: number }).size;
+      if (target.maxSizeBytes !== undefined && bytes !== undefined && bytes > target.maxSizeBytes) continue;
+      if (target.minSizeBytes !== undefined && bytes !== undefined && bytes < target.minSizeBytes) continue;
 
       assets.push(buildAsset(repoId, entry.path, entry.size));
       count++;

@@ -893,6 +893,26 @@ body {
   gap: 0.7rem;
 }
 
+.about-text {
+  font-size: 0.8rem;
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+
+.about-text strong {
+  color: var(--text-primary);
+}
+
+.about-link {
+  color: var(--accent-hf);
+  text-decoration: none;
+  font-weight: 600;
+}
+
+.about-link:hover {
+  text-decoration: underline;
+}
+
 .memory-bar {
   display: flex;
   justify-content: space-between;

@@ -108,7 +108,7 @@ This spins up a local web server serving the `dist/` directory at **`http://loca
 ## Static Asset Manifests (Fast & Rate-Limit Proof)
 
 To protect the application against Hugging Face API rate limits (`429 Too Many Requests`) for public visitors, the app boots instantly using pre-compiled static manifests located in `public/`:
-* **`public/manifest-3d.json`** (~762 verified 3D assets across `lowpoly-coder-4b-data`, `smithsonian-3d-glb`, `scenario-labs/3d-collection`, `abo-furniture-glb`, etc.).
+* **`public/manifest-3d.json`** (~922 verified 3D assets across `lowpoly-coder-4b-data`, `smithsonian-3d-glb`, `scenario-labs/3d-collection`, `abo-furniture-glb`, `TexVerse`, etc.).
 * **`public/manifest-art.json`** (Framed classical and modern wall paintings).
 
 When a visitor opens the app, all 3D models and paintings hydrate in **~50 milliseconds** with **zero calls** to Hugging Face metadata endpoints.
@@ -127,6 +127,35 @@ bun run generate-manifest
 # Generate framed wall art manifest
 bun run scripts/generate-art-manifest.ts
 ```
+
+To add samples from one dataset without regenerating the whole manifest (fast, no `429` storms):
+
+```bash
+# <repoId> [count] [pathPrefix] [maxMB] [--replace]
+bun run add-dataset YiboZhang2001/TexVerse 60 glbs/glbs_2k/ 60 --replace
+```
+
+---
+
+## ⚠️ Performance Warnings
+
+### 1. `pickRandom()` is O(n²) in pool size
+
+`HF3DDiscoveryService.pickRandom()` (`src/hf.ts`) picks a repository uniformly at random, then an asset within that repository. Before choosing, it calls `getRepoFileCount()` for **every** candidate, and that helper linearly walks the whole pool — so a single roll costs roughly `pool size²` iterations.
+
+Measured: at the current **922-entry pool it is ~850K iterations per roll** (a few milliseconds in the browser — acceptable, but not free). The pool is capped at `MAX_POOL_SIZE = 2000`; near that cap each roll costs ~4M iterations, and scripted/exhaustive use (batch sampling, simulations, thousands of rolls) becomes noticeably slow.
+
+**Fix if the pool ever grows:** maintain a `Map<repoId, count>` as a counter, updated on pool add/remove, instead of recomputing per candidate — or hoist the counts to a single pass before the selection loop. That turns each roll into O(n).
+
+### 2. Manifest entries bypass the file-size guards
+
+`MAX_RANDOM_FILE_BYTES` (60 MB) and `MIN_QUALITY_FILE_BYTES` are enforced in `createAsset()`, which is only used by the *live* discovery paths. Assets loaded straight from `public/manifest-3d.json` skip those checks entirely.
+
+Consequence: a huge model added to the manifest will still be picked and will stall the viewer on load. When sampling heavy repositories (e.g. `YiboZhang2001/TexVerse`, whose 2K tier alone ranges 0.1 MB → 302 MB), always filter at generation time — use `maxSizeBytes` on a `SeedTarget`, or the `[maxMB]` argument of `add-dataset`.
+
+---
+
+## Gallery Controls
 
 | Action | Control |
 | :--- | :--- |

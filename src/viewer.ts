@@ -14,9 +14,21 @@ import {
   type WallArtworkItem,
 } from './hf';
 import { SpatialAudioManager } from './audio';
+import { generateSculptureNameForDais } from './gemini-visitor';
 
 export type ViewerMode = 'studio' | 'showroom';
 export type LodTier = 'close' | 'medium' | 'far';
+export type DaisAssemblyMode = 'collision' | 'totem';
+export type DaisFinishMode = 'auto-patina' | 'bronze' | 'chrome' | 'marble';
+
+interface ProceduralPreset {
+  map: THREE.CanvasTexture;
+  bumpMap: THREE.CanvasTexture;
+  color: number;
+  metalness: number;
+  roughness: number;
+  bumpScale: number;
+}
 
 export interface LoadedModelStats {
   vertices: number;
@@ -79,6 +91,39 @@ interface InternalPedestalSlot {
   loadedAt: number;
 }
 
+interface InternalDaisSlot {
+  index: number;
+  position: THREE.Vector3;
+  daisGroup: THREE.Group;
+  lecternGroup: THREE.Group;
+  modelPivot: THREE.Group;
+  lecternScreenMesh: THREE.Mesh;
+  ringMesh: THREE.Mesh;
+  contactShadowMesh: THREE.Mesh;
+  daisLight: THREE.PointLight;
+  lightCone: THREE.Mesh;
+  lightConeMat: THREE.MeshBasicMaterial;
+  haloRippleMesh: THREE.Mesh;
+  haloRippleMat: THREE.MeshBasicMaterial;
+  smokePuffPoints: THREE.Points;
+  smokePuffMat: THREE.PointsMaterial;
+  smokeSeeds: Float32Array;
+  dustMotesPoints: THREE.Points;
+  dustMotesMat: THREE.PointsMaterial;
+  dustSeeds: Float32Array;
+  revealTimer: number;
+  modelRoot: THREE.Object3D | null;
+  clonedMaterials: THREE.Material[];
+  sourceSlotIndices: number[];
+  sourceAssets: Discovered3DAsset[];
+  stats: LoadedModelStats | null;
+  sculptureName: string | null;
+  isNamingSculpture: boolean;
+  namingRequestId: number;
+  collisionCount: number;
+  combinationCursor: number;
+}
+
 const REVEAL_DURATION = 1.65;
 
 // Spacious 4-bay gallery promenade arc: wide enough (~14.4m span) for all 3 LOD tiers
@@ -91,6 +136,9 @@ const PEDESTAL_POSITIONS: THREE.Vector3[] = [
 ];
 
 const PLINTH_HEIGHT = 1.05;
+export const DAIS_SLOT_INDEX = 4;
+const DAIS_POSITION = new THREE.Vector3(0, 0, 1.05);
+const DAIS_HEIGHT = 0.62;
 
 export class ThreeModelViewer {
   private canvas: HTMLCanvasElement;
@@ -107,9 +155,10 @@ export class ThreeModelViewer {
   private currentModelRoot: THREE.Object3D | null = null;
   private studioMixer: THREE.AnimationMixer | null = null;
 
-  // Showroom 4-pedestal environment & slots
+  // Showroom 4-pedestal environment + Central Exquisite Corpse Dais
   private showroomGroup: THREE.Group;
   private slots: InternalPedestalSlot[] = [];
+  private daisSlot!: InternalDaisSlot;
   private wallPaintingMeshes: THREE.Mesh[] = [];
   private nextWallFrameIndex = 0;
   private activeArtIds = new Set<string>(); // Tracks currently displayed artworks to guarantee zero repeats
@@ -117,6 +166,7 @@ export class ThreeModelViewer {
   private artCursor = 0;
   private focusedSlotIndex = 0;
   private nextReplaceSlotIndex = 0;
+  private newShowroomModelsSinceDaisRebuild = 0;
   private farProxyMaterial: THREE.MeshBasicMaterial;
   private mediumProxyMaterial: THREE.MeshLambertMaterial;
 
@@ -141,6 +191,12 @@ export class ThreeModelViewer {
   private mode: ViewerMode = 'studio';
   private onShowroomProjectionUpdate?: (states: PedestalSlotState[]) => void;
   private onPedestalSelect?: (slotIndex: number) => void;
+  private onDaisSculptureNamed?: (name: string) => void;
+  private daisSnapshotCamera = new THREE.PerspectiveCamera(38, 1, 0.1, 40);
+  private daisAssemblyMode: DaisAssemblyMode = 'totem';
+  private daisFinishMode: DaisFinishMode = 'auto-patina';
+  private proceduralPresets: Record<'bronze' | 'verdigris' | 'chrome' | 'marble', ProceduralPreset> | null =
+    null;
 
   private clock = new THREE.Clock();
   private gltfLoader: GLTFLoader;
@@ -149,6 +205,7 @@ export class ThreeModelViewer {
   private stlLoader: STLLoader;
 
   private activeAbortController: AbortController | null = null;
+  private slotAbortControllers: Array<AbortController | null> = [null, null, null, null];
   private wireframeEnabled = false;
   private autoRotateEnabled = true;
   private studioGridPreferred = true;
@@ -497,9 +554,9 @@ export class ThreeModelViewer {
       metalness: 0.78,
     });
 
-    for (const benchX of [-3.3, 3.3]) {
+    for (const benchX of [-5.2, 5.2]) {
       const benchGroup = new THREE.Group();
-      benchGroup.position.set(benchX, 0, 1.85);
+      benchGroup.position.set(benchX, 0, 5.75);
 
       const cushion = new THREE.Mesh(cushionGeo, leatherMat);
       cushion.position.y = 0.44;
@@ -610,8 +667,8 @@ export class ThreeModelViewer {
       bayLights.push(bayLight);
     }
 
-    const loungeLight = new THREE.PointLight(0xffe4b5, 1.8, 14, 1.4);
-    loungeLight.position.set(0, 4.4, 2.4);
+    const loungeLight = new THREE.PointLight(0xffe4b5, 2.5, 15, 1.35);
+    loungeLight.position.set(DAIS_POSITION.x, 4.4, DAIS_POSITION.z + 0.25);
     this.showroomGroup.add(loungeLight);
 
     // 6. Decorative Acoustic Wood-Slat Feature Panels & Brass Picture Lights behind each of the 4 Bays
@@ -1010,6 +1067,265 @@ export class ThreeModelViewer {
       this.slots.push(slotObj);
       this.updateSlotLecternTexture(slotObj);
     }
+
+    // 9. Build the Central Rotunda "Exquisite Corpse" Dais (Slot #4) for 3-Model Collisions
+    const daisGroup = new THREE.Group();
+    daisGroup.position.copy(DAIS_POSITION);
+
+    // Wide lower stepped walnut podium
+    const daisStep1 = new THREE.Mesh(
+      new THREE.CylinderGeometry(1.52, 1.62, 0.22, 48),
+      walnutMat
+    );
+    daisStep1.position.y = 0.11;
+    daisStep1.receiveShadow = true;
+    daisStep1.castShadow = true;
+    daisStep1.userData.slotIndex = DAIS_SLOT_INDEX;
+    daisGroup.add(daisStep1);
+
+    const daisStep1Rim = new THREE.Mesh(
+      new THREE.CylinderGeometry(1.55, 1.55, 0.035, 48),
+      brassMat
+    );
+    daisStep1Rim.position.y = 0.21;
+    daisStep1Rim.userData.slotIndex = DAIS_SLOT_INDEX;
+    daisGroup.add(daisStep1Rim);
+
+    // Upper sculptural tier
+    const daisStep2 = new THREE.Mesh(
+      new THREE.CylinderGeometry(1.16, 1.24, DAIS_HEIGHT - 0.22, 48),
+      baseMat
+    );
+    daisStep2.position.y = 0.22 + (DAIS_HEIGHT - 0.22) / 2;
+    daisStep2.receiveShadow = true;
+    daisStep2.castShadow = true;
+    daisStep2.userData.slotIndex = DAIS_SLOT_INDEX;
+    daisGroup.add(daisStep2);
+
+    const daisBrassCollar = new THREE.Mesh(
+      new THREE.CylinderGeometry(1.2, 1.2, 0.045, 48),
+      brassMat
+    );
+    daisBrassCollar.position.y = DAIS_HEIGHT - 0.03;
+    daisBrassCollar.userData.slotIndex = DAIS_SLOT_INDEX;
+    daisGroup.add(daisBrassCollar);
+
+    // Warm cream marble top stage
+    const daisCap = new THREE.Mesh(
+      new THREE.CylinderGeometry(1.18, 1.18, 0.05, 48),
+      capMat
+    );
+    daisCap.position.y = DAIS_HEIGHT + 0.025;
+    daisCap.receiveShadow = true;
+    daisCap.userData.slotIndex = DAIS_SLOT_INDEX;
+    daisGroup.add(daisCap);
+
+    // Glowing perimeter ring (gold when focused, royal amethyst when idle)
+    const daisRingMat = new THREE.MeshBasicMaterial({
+      color: 0xc084fc,
+      side: THREE.DoubleSide,
+      transparent: true,
+      opacity: 0.9,
+    });
+    const daisRingMesh = new THREE.Mesh(
+      new THREE.RingGeometry(1.1, 1.17, 64),
+      daisRingMat
+    );
+    daisRingMesh.rotation.x = -Math.PI / 2;
+    daisRingMesh.position.y = DAIS_HEIGHT + 0.052;
+    daisGroup.add(daisRingMesh);
+
+    const daisHaloMat = new THREE.MeshBasicMaterial({
+      color: 0xfbbf24,
+      side: THREE.DoubleSide,
+      transparent: true,
+      opacity: 0,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+    });
+    const daisHaloMesh = new THREE.Mesh(
+      new THREE.RingGeometry(1.02, 1.17, 64),
+      daisHaloMat
+    );
+    daisHaloMesh.rotation.x = -Math.PI / 2;
+    daisHaloMesh.position.y = DAIS_HEIGHT + 0.056;
+    daisHaloMesh.visible = false;
+    daisGroup.add(daisHaloMesh);
+
+    const daisShadowMat = new THREE.MeshBasicMaterial({
+      map: shadowTex,
+      transparent: true,
+      depthWrite: false,
+      opacity: 0.78,
+    });
+    const daisContactShadow = new THREE.Mesh(
+      new THREE.PlaneGeometry(1.9, 1.9),
+      daisShadowMat
+    );
+    daisContactShadow.rotation.x = -Math.PI / 2;
+    daisContactShadow.position.y = DAIS_HEIGHT + 0.053;
+    daisContactShadow.visible = false;
+    daisGroup.add(daisContactShadow);
+
+    const daisConeMat = new THREE.MeshBasicMaterial({
+      color: 0xfff3d1,
+      transparent: true,
+      opacity: 0.05,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+    });
+    const daisCone = new THREE.Mesh(
+      new THREE.ConeGeometry(1.38, 3.2, 36, 1, true),
+      daisConeMat
+    );
+    daisCone.position.y = DAIS_HEIGHT + 1.95;
+    daisGroup.add(daisCone);
+
+    // Pre-allocated Dais velvet smoke puff
+    const dSmokeCount = 42;
+    const dSmokePositions = new Float32Array(dSmokeCount * 3);
+    const dSmokeSeeds = new Float32Array(dSmokeCount * 4);
+    for (let s = 0; s < dSmokeCount; s++) {
+      dSmokeSeeds[s * 4] = (s / dSmokeCount) * Math.PI * 2 + (Math.random() - 0.5) * 0.25;
+      dSmokeSeeds[s * 4 + 1] = 0.85 + Math.random() * 0.65;
+      dSmokeSeeds[s * 4 + 2] = 0.1 + Math.random() * 0.25;
+      dSmokeSeeds[s * 4 + 3] = Math.random() * Math.PI * 2;
+    }
+    const dSmokeGeo = new THREE.BufferGeometry();
+    dSmokeGeo.setAttribute('position', new THREE.BufferAttribute(dSmokePositions, 3));
+    const dSmokeMat = new THREE.PointsMaterial({
+      map: particleTex,
+      color: 0xf5ebd6,
+      size: 0.48,
+      transparent: true,
+      opacity: 0,
+      depthWrite: false,
+    });
+    const dSmokePoints = new THREE.Points(dSmokeGeo, dSmokeMat);
+    dSmokePoints.position.y = DAIS_HEIGHT + 0.06;
+    dSmokePoints.visible = false;
+    daisGroup.add(dSmokePoints);
+
+    // Pre-allocated Dais rising golden dust motes
+    const dDustCount = 54;
+    const dDustPositions = new Float32Array(dDustCount * 3);
+    const dDustSeeds = new Float32Array(dDustCount * 4);
+    for (let d = 0; d < dDustCount; d++) {
+      dDustSeeds[d * 4] = Math.random() * Math.PI * 2;
+      dDustSeeds[d * 4 + 1] = 0.2 + Math.random() * 0.85;
+      dDustSeeds[d * 4 + 2] = Math.random() * 0.5;
+      dDustSeeds[d * 4 + 3] = 0.55 + Math.random() * 0.8;
+    }
+    const dDustGeo = new THREE.BufferGeometry();
+    dDustGeo.setAttribute('position', new THREE.BufferAttribute(dDustPositions, 3));
+    const dDustMat = new THREE.PointsMaterial({
+      map: particleTex,
+      color: 0xffd97d,
+      size: 0.12,
+      transparent: true,
+      opacity: 0,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+    });
+    const dDustPoints = new THREE.Points(dDustGeo, dDustMat);
+    dDustPoints.position.y = DAIS_HEIGHT + 0.06;
+    dDustPoints.visible = false;
+    daisGroup.add(dDustPoints);
+
+    const daisModelPivot = new THREE.Group();
+    daisModelPivot.position.y = DAIS_HEIGHT + 0.054;
+    daisGroup.add(daisModelPivot);
+
+    // Angled Museum Lectern Plaque in front of the Central Dais
+    const daisLecternGroup = new THREE.Group();
+    daisLecternGroup.position.set(0, 0, 1.72);
+    daisLecternGroup.rotation.y = 0;
+
+    const daisLecternBase = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.18, 0.22, 0.035, 24),
+      brassMat
+    );
+    daisLecternBase.position.y = 0.0175;
+    daisLecternBase.castShadow = true;
+    daisLecternBase.receiveShadow = true;
+    daisLecternBase.userData.slotIndex = DAIS_SLOT_INDEX;
+    daisLecternGroup.add(daisLecternBase);
+
+    const daisLecternPost = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.032, 0.038, 0.78, 16),
+      walnutMat
+    );
+    daisLecternPost.position.y = 0.4;
+    daisLecternPost.castShadow = true;
+    daisLecternPost.userData.slotIndex = DAIS_SLOT_INDEX;
+    daisLecternGroup.add(daisLecternPost);
+
+    const daisTabletMount = new THREE.Group();
+    daisTabletMount.position.set(0, 0.81, 0.04);
+    daisTabletMount.rotation.x = -0.62;
+
+    const daisBezelMesh = new THREE.Mesh(
+      new THREE.BoxGeometry(1.06, 0.68, 0.036),
+      brassMat
+    );
+    daisBezelMesh.castShadow = true;
+    daisBezelMesh.receiveShadow = true;
+    daisBezelMesh.userData.slotIndex = DAIS_SLOT_INDEX;
+    daisTabletMount.add(daisBezelMesh);
+
+    const daisBackingSlate = new THREE.Mesh(
+      new THREE.BoxGeometry(1.02, 0.64, 0.04),
+      new THREE.MeshStandardMaterial({ color: 0x0f141e, roughness: 0.7 })
+    );
+    daisBackingSlate.userData.slotIndex = DAIS_SLOT_INDEX;
+    daisTabletMount.add(daisBackingSlate);
+
+    const daisLecternScreen = new THREE.Mesh(
+      new THREE.PlaneGeometry(0.99, 0.61),
+      new THREE.MeshBasicMaterial({ color: 0xffffff })
+    );
+    daisLecternScreen.position.z = 0.022;
+    daisLecternScreen.userData.slotIndex = DAIS_SLOT_INDEX;
+    daisLecternScreen.userData.isDaisLectern = true;
+    daisTabletMount.add(daisLecternScreen);
+
+    daisLecternGroup.add(daisTabletMount);
+    daisGroup.add(daisLecternGroup);
+    this.showroomGroup.add(daisGroup);
+
+    this.daisSlot = {
+      index: DAIS_SLOT_INDEX,
+      position: DAIS_POSITION.clone(),
+      daisGroup,
+      lecternGroup: daisLecternGroup,
+      modelPivot: daisModelPivot,
+      lecternScreenMesh: daisLecternScreen,
+      ringMesh: daisRingMesh,
+      contactShadowMesh: daisContactShadow,
+      daisLight: loungeLight,
+      lightCone: daisCone,
+      lightConeMat: daisConeMat,
+      haloRippleMesh: daisHaloMesh,
+      haloRippleMat: daisHaloMat,
+      smokePuffPoints: dSmokePoints,
+      smokePuffMat: dSmokeMat,
+      smokeSeeds: dSmokeSeeds,
+      dustMotesPoints: dDustPoints,
+      dustMotesMat: dDustMat,
+      dustSeeds: dDustSeeds,
+      revealTimer: 0,
+      modelRoot: null,
+      clonedMaterials: [],
+      sourceSlotIndices: [],
+      sourceAssets: [],
+      stats: null,
+      sculptureName: null,
+      isNamingSculpture: false,
+      namingRequestId: 0,
+      collisionCount: 0,
+      combinationCursor: 0,
+    };
+    this.updateDaisLecternTexture();
   }
 
   private setupShowroomInteractions(): void {
@@ -1087,7 +1403,11 @@ export class ThreeModelViewer {
         while (cur) {
           if (typeof cur.userData?.slotIndex === 'number') {
             const idx = cur.userData.slotIndex as number;
-            this.focusPedestal(idx);
+            if (idx === DAIS_SLOT_INDEX && this.focusedSlotIndex === DAIS_SLOT_INDEX && hit.object.userData?.isDaisLectern) {
+              this.rebuildDaisCollision(true);
+            } else {
+              this.focusPedestal(idx);
+            }
             this.onPedestalSelect?.(idx);
             return;
           }
@@ -1100,9 +1420,11 @@ export class ThreeModelViewer {
   public setCallbacks(callbacks: {
     onShowroomProjectionUpdate?: (states: PedestalSlotState[]) => void;
     onPedestalSelect?: (slotIndex: number) => void;
+    onDaisSculptureNamed?: (name: string) => void;
   }): void {
     this.onShowroomProjectionUpdate = callbacks.onShowroomProjectionUpdate;
     this.onPedestalSelect = callbacks.onPedestalSelect;
+    this.onDaisSculptureNamed = callbacks.onDaisSculptureNamed;
   }
 
   public setMode(mode: ViewerMode): void {
@@ -1144,6 +1466,14 @@ export class ThreeModelViewer {
     datasetMeta: DatasetMetadata | null;
     stats: LoadedModelStats | null;
   } | null {
+    if (slotIndex === DAIS_SLOT_INDEX && this.daisSlot) {
+      const primaryAsset = this.daisSlot.sourceAssets[0] || null;
+      return {
+        asset: primaryAsset,
+        datasetMeta: null,
+        stats: this.daisSlot.stats,
+      };
+    }
     const slot = this.slots[slotIndex];
     if (!slot) return null;
     return {
@@ -1151,6 +1481,50 @@ export class ThreeModelViewer {
       datasetMeta: slot.datasetMeta,
       stats: slot.stats,
     };
+  }
+
+  public getDaisInfo(): {
+    sourceSlotIndices: number[];
+    sourceAssets: Discovered3DAsset[];
+    stats: LoadedModelStats | null;
+    sculptureName: string | null;
+    isNamingSculpture: boolean;
+    collisionCount: number;
+    assemblyMode: DaisAssemblyMode;
+    finishMode: DaisFinishMode;
+  } {
+    return {
+      sourceSlotIndices: [...this.daisSlot.sourceSlotIndices],
+      sourceAssets: [...this.daisSlot.sourceAssets],
+      stats: this.daisSlot.stats,
+      sculptureName: this.daisSlot.sculptureName,
+      isNamingSculpture: this.daisSlot.isNamingSculpture,
+      collisionCount: this.daisSlot.collisionCount,
+      assemblyMode: this.daisAssemblyMode,
+      finishMode: this.daisFinishMode,
+    };
+  }
+
+  public getDaisAssemblyMode(): DaisAssemblyMode {
+    return this.daisAssemblyMode;
+  }
+
+  public toggleDaisAssemblyMode(): DaisAssemblyMode {
+    this.daisAssemblyMode = this.daisAssemblyMode === 'collision' ? 'totem' : 'collision';
+    this.rebuildDaisCollision(true);
+    return this.daisAssemblyMode;
+  }
+
+  public getDaisFinishMode(): DaisFinishMode {
+    return this.daisFinishMode;
+  }
+
+  public cycleDaisFinishMode(): DaisFinishMode {
+    const order: DaisFinishMode[] = ['auto-patina', 'bronze', 'chrome', 'marble'];
+    const idx = order.indexOf(this.daisFinishMode);
+    this.daisFinishMode = order[(idx + 1) % order.length];
+    this.rebuildDaisCollision(true);
+    return this.daisFinishMode;
   }
 
   /**
@@ -1432,14 +1806,10 @@ export class ThreeModelViewer {
         slot.stats?.scaleLabel && slot.stats.scaleLabel !== '1:1'
           ? `📐 ${slot.stats.scaleLabel}`
           : '';
-      const likes = slot.datasetMeta ? `❤️ ${slot.datasetMeta.likes.toLocaleString()}` : '';
-      const dls = slot.datasetMeta ? `⬇️ ${slot.datasetMeta.downloads.toLocaleString()}` : '';
       const specString = [
         `.${slot.asset.format.toUpperCase()}`,
         tris,
         scaleTag,
-        likes,
-        dls,
       ]
         .filter(Boolean)
         .join('   ·   ');
@@ -1459,6 +1829,1252 @@ export class ThreeModelViewer {
     }
     mat.map = newTex;
     mat.needsUpdate = true;
+  }
+
+  /**
+   * Renders the Thought Piece lectern plaque showing the 3 combined objects,
+   * their source pedestals & datasets, combined polygon count, and interactive controls.
+   */
+  private updateDaisLecternTexture(): void {
+    if (!this.daisSlot) return;
+    const mesh = this.daisSlot.lecternScreenMesh;
+    if (!mesh) return;
+
+    const c = document.createElement('canvas');
+    c.width = 1024;
+    c.height = 650;
+    const ctx = c.getContext('2d')!;
+
+    const isFocused = this.focusedSlotIndex === DAIS_SLOT_INDEX;
+
+    // 1. Deep Royal Amethyst-Slate Tablet Background
+    const bgGrad = ctx.createLinearGradient(0, 0, 0, c.height);
+    bgGrad.addColorStop(0, isFocused ? '#231934' : '#161224');
+    bgGrad.addColorStop(1, '#0c0a14');
+    ctx.fillStyle = bgGrad;
+    ctx.fillRect(0, 0, c.width, c.height);
+
+    // 2. Double Brushed-Brass Curatorial Border & Corner Studs
+    ctx.strokeStyle = isFocused ? '#fbbf24' : '#c084fc';
+    ctx.lineWidth = isFocused ? 6 : 4;
+    ctx.strokeRect(18, 18, c.width - 36, c.height - 36);
+
+    ctx.strokeStyle = 'rgba(212, 163, 89, 0.38)';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(30, 30, c.width - 60, c.height - 60);
+
+    ctx.fillStyle = '#d4a359';
+    for (const [cx, cy] of [
+      [44, 44],
+      [c.width - 44, 44],
+      [44, c.height - 44],
+      [c.width - 44, c.height - 44],
+    ]) {
+      ctx.beginPath();
+      ctx.arc(cx, cy, 5, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    // 3. Header Row
+    ctx.fillStyle = '#fbbf24';
+    ctx.font = 'bold 25px ui-monospace, SFMono-Regular, Menlo, monospace';
+    ctx.fillText('⚡ THOUGHT PIECE', 62, 82);
+
+    const modeLabel =
+      this.daisAssemblyMode === 'totem' ? '🗿 TOTEM STACK' : '💥 3-MODEL COLLISION';
+    const modeBadge = `${modeLabel} #${Math.max(1, this.daisSlot.collisionCount)}`;
+    ctx.font = 'bold 20px ui-monospace, SFMono-Regular, Menlo, monospace';
+    const badgeW = ctx.measureText(modeBadge).width;
+    ctx.fillStyle = 'rgba(192, 132, 252, 0.14)';
+    ctx.fillRect(c.width - badgeW - 92, 52, badgeW + 34, 40);
+    ctx.fillStyle = '#e9d5ff';
+    ctx.fillText(modeBadge, c.width - badgeW - 75, 79);
+
+    ctx.fillStyle = 'rgba(212, 163, 89, 0.35)';
+    ctx.fillRect(62, 104, c.width - 124, 2);
+
+    if (this.daisSlot.sourceAssets.length === 0 || !this.daisSlot.modelRoot) {
+      ctx.fillStyle = '#fbbf24';
+      ctx.font = 'bold 46px system-ui, -apple-system, sans-serif';
+      ctx.fillText('Under construction', 62, 290);
+
+      ctx.fillStyle = '#9ca3af';
+      ctx.font = 'italic 26px system-ui, -apple-system, sans-serif';
+      ctx.fillText('Assembling pedestal exhibits into a Thought Piece…', 62, 344);
+    } else {
+      // 4. Gemini Sculpture Name (or Mashup Fallback while curating)
+      const shortNames = this.daisSlot.sourceAssets.map((a) => {
+        const raw = a.title || a.filename.replace(/\.[^.]+$/, '');
+        return raw.length > 22 ? `${raw.slice(0, 20)}…` : raw;
+      });
+      const mashupTitle = shortNames.join('  ×  ');
+
+      ctx.fillStyle = this.daisSlot.sculptureName ? '#c084fc' : '#94a3b8';
+      ctx.font = 'bold 19px ui-monospace, SFMono-Regular, Menlo, monospace';
+      ctx.fillText(
+        this.daisSlot.sculptureName
+          ? '✦ EXHIBIT TITLE · NAMED BY GEMINI FROM 3 CAMERA ANGLES'
+          : this.daisSlot.isNamingSculpture
+            ? '✦ PHOTOGRAPHING SCULPTURE & NAMING WITH GEMINI…'
+            : '✦ THOUGHT PIECE',
+        62,
+        138
+      );
+
+      const displayTitle = this.daisSlot.sculptureName
+        ? `“${this.daisSlot.sculptureName}”`
+        : mashupTitle;
+
+      ctx.fillStyle = this.daisSlot.sculptureName ? '#fef3c7' : '#f9fafb';
+      ctx.font = 'bold 38px system-ui, -apple-system, sans-serif';
+      const titleLines = this.wrapCanvasLines(ctx, displayTitle, c.width - 124, 2);
+      let curY = 182;
+      for (const line of titleLines) {
+        ctx.fillText(line, 62, curY);
+        curY += 44;
+      }
+
+      // 5. Source Plinths & Datasets Recipe
+      curY += 8;
+      for (let i = 0; i < this.daisSlot.sourceAssets.length; i++) {
+        const asset = this.daisSlot.sourceAssets[i];
+        const plinthNum = (this.daisSlot.sourceSlotIndices[i] ?? i) + 1;
+        const partTitle = (asset.title || asset.filename).slice(0, 32);
+        const repoShort = asset.repoId.split('/')[1] || asset.repoId;
+
+        ctx.fillStyle = '#fbbf24';
+        ctx.font = 'bold 22px ui-monospace, SFMono-Regular, Menlo, monospace';
+        ctx.fillText(`Plinth #${plinthNum}:`, 62, curY);
+
+        ctx.fillStyle = '#e2e8f0';
+        ctx.font = '23px system-ui, -apple-system, sans-serif';
+        ctx.fillText(`${partTitle}  (${repoShort})`.slice(0, 56), 210, curY);
+        curY += 36;
+      }
+
+      // 6. Footer Spec Bar + Interactive Re-Collide Prompt
+      ctx.fillStyle = 'rgba(212, 163, 89, 0.35)';
+      ctx.fillRect(62, c.height - 110, c.width - 124, 2);
+
+      const tris = this.daisSlot.stats
+        ? `${this.daisSlot.stats.triangles.toLocaleString()} combined tris`
+        : '';
+      const meshes = this.daisSlot.stats ? `${this.daisSlot.stats.meshes} meshes` : '';
+      const specString = [
+        `${this.daisSlot.sourceAssets.length} GLBs Fused`,
+        tris,
+        meshes,
+        '[R] Re-Assemble · [T] Mode',
+      ]
+        .filter(Boolean)
+        .join('  ·  ');
+
+      ctx.fillStyle = '#e9d5ff';
+      ctx.font = 'bold 22px ui-monospace, SFMono-Regular, Menlo, monospace';
+      ctx.fillText(specString.slice(0, 68), 62, c.height - 66);
+    }
+
+    const newTex = new THREE.CanvasTexture(c);
+    newTex.colorSpace = THREE.SRGBColorSpace;
+    newTex.anisotropy = Math.min(8, this.renderer.capabilities.getMaxAnisotropy());
+
+    const mat = mesh.material as THREE.MeshBasicMaterial;
+    if (mat.map) {
+      this.disposeTexture(mat.map);
+    }
+    mat.map = newTex;
+    mat.needsUpdate = true;
+  }
+
+  private clearDaisModels(): void {
+    if (!this.daisSlot) return;
+    if (this.daisSlot.modelRoot) {
+      this.daisSlot.modelPivot.remove(this.daisSlot.modelRoot);
+      this.daisSlot.modelRoot = null;
+    }
+    for (const mat of this.daisSlot.clonedMaterials) {
+      mat.dispose();
+    }
+    this.daisSlot.clonedMaterials = [];
+    this.daisSlot.sourceSlotIndices = [];
+    this.daisSlot.sourceAssets = [];
+    this.daisSlot.stats = null;
+    this.daisSlot.sculptureName = null;
+    this.daisSlot.isNamingSculpture = false;
+    this.daisSlot.contactShadowMesh.visible = false;
+    this.updateDaisLecternTexture();
+  }
+
+  private triggerDaisRevealEffect(): void {
+    if (!this.daisSlot) return;
+    this.daisSlot.revealTimer = REVEAL_DURATION;
+    this.daisSlot.haloRippleMesh.visible = true;
+    this.daisSlot.smokePuffPoints.visible = true;
+    this.daisSlot.dustMotesPoints.visible = true;
+
+    this.daisSlot.modelPivot.position.y = DAIS_HEIGHT - 0.22;
+    this.daisSlot.modelPivot.scale.setScalar(0.74);
+
+    if (this.mode === 'showroom') {
+      this.audio.updateListener(this.camera);
+      this.audio.playPlinthReveal(0);
+    }
+  }
+
+  /**
+   * Lazily initializes 4 seamless 512×512 procedural PBR material presets
+   * (Gilded Cast Bronze, Oxidized Verdigris Copper, Brushed Damascus Chrome, and
+   * Nero Marquina Gold-Veined Marble) so untextured / plain-white models in the
+   * combined Dais sculpture receive rich metallic or stone surface patinas.
+   */
+  private getProceduralPresets(): Record<'bronze' | 'verdigris' | 'chrome' | 'marble', ProceduralPreset> {
+    if (this.proceduralPresets) return this.proceduralPresets;
+
+    const makeCanvasPair = (
+      drawFn: (ctx: CanvasRenderingContext2D, bumpCtx: CanvasRenderingContext2D, w: number, h: number) => void
+    ): { map: THREE.CanvasTexture; bumpMap: THREE.CanvasTexture } => {
+      const w = 512;
+      const h = 512;
+      const colCanvas = document.createElement('canvas');
+      colCanvas.width = w;
+      colCanvas.height = h;
+      const bumpCanvas = document.createElement('canvas');
+      bumpCanvas.width = w;
+      bumpCanvas.height = h;
+
+      const ctx = colCanvas.getContext('2d')!;
+      const bumpCtx = bumpCanvas.getContext('2d')!;
+      drawFn(ctx, bumpCtx, w, h);
+
+      const map = new THREE.CanvasTexture(colCanvas);
+      map.colorSpace = THREE.SRGBColorSpace;
+      map.wrapS = THREE.RepeatWrapping;
+      map.wrapT = THREE.RepeatWrapping;
+      map.userData.isPersistentProcedural = true;
+
+      const bumpMap = new THREE.CanvasTexture(bumpCanvas);
+      bumpMap.wrapS = THREE.RepeatWrapping;
+      bumpMap.wrapT = THREE.RepeatWrapping;
+      bumpMap.userData.isPersistentProcedural = true;
+
+      return { map, bumpMap };
+    };
+
+    // 1. Gilded Cast Bronze (warm metallic bronze with brushed grain & dark umber crevices)
+    const bronzePair = makeCanvasPair((ctx, bumpCtx, w, h) => {
+      const grad = ctx.createLinearGradient(0, 0, w, h);
+      grad.addColorStop(0, '#a3743d');
+      grad.addColorStop(0.5, '#c89654');
+      grad.addColorStop(1, '#7d562a');
+      ctx.fillStyle = grad;
+      ctx.fillRect(0, 0, w, h);
+
+      bumpCtx.fillStyle = '#808080';
+      bumpCtx.fillRect(0, 0, w, h);
+
+      for (let i = 0; i < 1600; i++) {
+        const x = Math.random() * w;
+        const y = Math.random() * h;
+        const len = 18 + Math.random() * 65;
+        ctx.strokeStyle =
+          i % 5 === 0
+            ? 'rgba(45, 95, 82, 0.14)'
+            : i % 2 === 0
+              ? 'rgba(255, 218, 158, 0.14)'
+              : 'rgba(42, 26, 12, 0.16)';
+        ctx.lineWidth = 1 + Math.random() * 2.2;
+        ctx.beginPath();
+        ctx.moveTo(x, y);
+        ctx.lineTo(x + len, y + (Math.random() - 0.5) * 8);
+        ctx.stroke();
+
+        bumpCtx.strokeStyle = i % 2 === 0 ? 'rgba(220,220,220,0.18)' : 'rgba(40,40,40,0.18)';
+        bumpCtx.lineWidth = 1.2;
+        bumpCtx.beginPath();
+        bumpCtx.moveTo(x, y);
+        bumpCtx.lineTo(x + len, y + (Math.random() - 0.5) * 8);
+        bumpCtx.stroke();
+      }
+    });
+
+    // 2. Oxidized Verdigris Copper (turquoise mineral patina with burnished copper veins)
+    const verdigrisPair = makeCanvasPair((ctx, bumpCtx, w, h) => {
+      const grad = ctx.createLinearGradient(0, 0, w, h);
+      grad.addColorStop(0, '#2c6e63');
+      grad.addColorStop(0.55, '#3b8276');
+      grad.addColorStop(1, '#7c4d34');
+      ctx.fillStyle = grad;
+      ctx.fillRect(0, 0, w, h);
+
+      bumpCtx.fillStyle = '#808080';
+      bumpCtx.fillRect(0, 0, w, h);
+
+      for (let i = 0; i < 420; i++) {
+        const cx = Math.random() * w;
+        const cy = Math.random() * h;
+        const r = 6 + Math.random() * 28;
+        ctx.fillStyle =
+          i % 3 === 0
+            ? 'rgba(184, 115, 51, 0.22)'
+            : i % 2 === 0
+              ? 'rgba(78, 182, 162, 0.16)'
+              : 'rgba(22, 48, 44, 0.18)';
+        ctx.beginPath();
+        ctx.arc(cx, cy, r, 0, Math.PI * 2);
+        ctx.fill();
+
+        bumpCtx.fillStyle = i % 2 === 0 ? 'rgba(210,210,210,0.16)' : 'rgba(45,45,45,0.16)';
+        bumpCtx.beginPath();
+        bumpCtx.arc(cx, cy, r * 0.8, 0, Math.PI * 2);
+        bumpCtx.fill();
+      }
+    });
+
+    // 3. Brushed Damascus Chrome / Titanium (high-polish silver-iridium with swirling lathe grain)
+    const chromePair = makeCanvasPair((ctx, bumpCtx, w, h) => {
+      const grad = ctx.createLinearGradient(0, 0, w, h);
+      grad.addColorStop(0, '#cbd5e1');
+      grad.addColorStop(0.5, '#f1f5f9');
+      grad.addColorStop(1, '#94a3b8');
+      ctx.fillStyle = grad;
+      ctx.fillRect(0, 0, w, h);
+
+      bumpCtx.fillStyle = '#808080';
+      bumpCtx.fillRect(0, 0, w, h);
+
+      for (let i = 0; i < 1800; i++) {
+        const x = Math.random() * w;
+        const y = Math.random() * h;
+        const len = 24 + Math.random() * 80;
+        ctx.strokeStyle =
+          i % 2 === 0 ? 'rgba(255, 255, 255, 0.22)' : 'rgba(51, 65, 85, 0.16)';
+        ctx.lineWidth = 0.9 + Math.random() * 1.5;
+        ctx.beginPath();
+        ctx.moveTo(x, y);
+        ctx.lineTo(x + len, y + Math.sin(y * 0.04) * 5);
+        ctx.stroke();
+
+        bumpCtx.strokeStyle = i % 2 === 0 ? 'rgba(225,225,225,0.16)' : 'rgba(50,50,50,0.16)';
+        bumpCtx.lineWidth = 1;
+        bumpCtx.beginPath();
+        bumpCtx.moveTo(x, y);
+        bumpCtx.lineTo(x + len, y + Math.sin(y * 0.04) * 5);
+        bumpCtx.stroke();
+      }
+    });
+
+    // 4. Nero Marquina Gold-Veined Marble (charcoal obsidian stone with antique gold & ivory veins)
+    const marblePair = makeCanvasPair((ctx, bumpCtx, w, h) => {
+      const grad = ctx.createLinearGradient(0, 0, w, h);
+      grad.addColorStop(0, '#1e222b');
+      grad.addColorStop(0.5, '#2b303c');
+      grad.addColorStop(1, '#151820');
+      ctx.fillStyle = grad;
+      ctx.fillRect(0, 0, w, h);
+
+      bumpCtx.fillStyle = '#808080';
+      bumpCtx.fillRect(0, 0, w, h);
+
+      // Subtle stone mottling
+      for (let i = 0; i < 300; i++) {
+        ctx.fillStyle =
+          i % 2 === 0 ? 'rgba(255, 255, 255, 0.03)' : 'rgba(10, 12, 16, 0.06)';
+        ctx.beginPath();
+        ctx.arc(Math.random() * w, Math.random() * h, 10 + Math.random() * 35, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      // Branching gold and warm ivory mineral veins
+      for (let v = 0; v < 26; v++) {
+        let vx = Math.random() * w;
+        let vy = 0;
+        const isGold = v % 2 === 0;
+        ctx.strokeStyle = isGold
+          ? 'rgba(218, 168, 86, 0.62)'
+          : 'rgba(241, 236, 225, 0.45)';
+        ctx.lineWidth = isGold ? 1.8 + Math.random() * 2.2 : 1.1 + Math.random() * 1.6;
+        ctx.beginPath();
+        ctx.moveTo(vx, vy);
+
+        bumpCtx.strokeStyle = 'rgba(225, 225, 225, 0.35)';
+        bumpCtx.lineWidth = 2;
+        bumpCtx.beginPath();
+        bumpCtx.moveTo(vx, vy);
+
+        while (vy < h) {
+          vy += 14 + Math.random() * 18;
+          vx += (Math.random() - 0.48) * 28;
+          ctx.lineTo(vx, vy);
+          bumpCtx.lineTo(vx, vy);
+        }
+        ctx.stroke();
+        bumpCtx.stroke();
+      }
+    });
+
+    this.proceduralPresets = {
+      bronze: {
+        ...bronzePair,
+        color: 0xffedd5,
+        metalness: 0.84,
+        roughness: 0.27,
+        bumpScale: 0.016,
+      },
+      verdigris: {
+        ...verdigrisPair,
+        color: 0xe6fffa,
+        metalness: 0.68,
+        roughness: 0.35,
+        bumpScale: 0.018,
+      },
+      chrome: {
+        ...chromePair,
+        color: 0xf8fafc,
+        metalness: 0.92,
+        roughness: 0.16,
+        bumpScale: 0.012,
+      },
+      marble: {
+        ...marblePair,
+        color: 0xffffff,
+        metalness: 0.18,
+        roughness: 0.24,
+        bumpScale: 0.014,
+      },
+    };
+
+    return this.proceduralPresets;
+  }
+
+  /**
+   * Generates tri-planar / box-projected UV coordinates on any geometry that lacks
+   * a `uv` attribute (such as raw `.stl` scans or untextured CAD `.glb`s) so procedural
+   * textures and bump maps wrap cleanly without stretching or solid-color artifacts.
+   */
+  private ensureGeometryHasUVs(geometry: THREE.BufferGeometry): void {
+    if (geometry.attributes.uv) return;
+    const pos = geometry.attributes.position;
+    if (!pos) return;
+
+    if (!geometry.attributes.normal) {
+      geometry.computeVertexNormals();
+    }
+    const norm = geometry.attributes.normal;
+    geometry.computeBoundingBox();
+    const bb = geometry.boundingBox;
+    const minX = bb ? bb.min.x : -1;
+    const minY = bb ? bb.min.y : -1;
+    const minZ = bb ? bb.min.z : -1;
+    const spanX = Math.max((bb ? bb.max.x - bb.min.x : 2), 0.001);
+    const spanY = Math.max((bb ? bb.max.y - bb.min.y : 2), 0.001);
+    const spanZ = Math.max((bb ? bb.max.z - bb.min.z : 2), 0.001);
+
+    const tileScale = 2.0;
+    const uvs = new Float32Array(pos.count * 2);
+
+    for (let i = 0; i < pos.count; i++) {
+      const px = (pos.getX(i) - minX) / spanX;
+      const py = (pos.getY(i) - minY) / spanY;
+      const pz = (pos.getZ(i) - minZ) / spanZ;
+
+      const nx = norm ? Math.abs(norm.getX(i)) : 0;
+      const ny = norm ? Math.abs(norm.getY(i)) : 1;
+      const nz = norm ? Math.abs(norm.getZ(i)) : 0;
+
+      if (nx >= ny && nx >= nz) {
+        uvs[i * 2] = pz * tileScale;
+        uvs[i * 2 + 1] = py * tileScale;
+      } else if (ny >= nx && ny >= nz) {
+        uvs[i * 2] = px * tileScale;
+        uvs[i * 2 + 1] = pz * tileScale;
+      } else {
+        uvs[i * 2] = px * tileScale;
+        uvs[i * 2 + 1] = py * tileScale;
+      }
+    }
+
+    geometry.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
+  }
+
+  /**
+   * Upgrades untextured/white materials on the Thought Piece Dais (in `auto-patina` mode)
+   * with a random patina or applies a unified procedural material across all 3 pieces (`bronze`, `chrome`, `marble`).
+   */
+  private upgradeDaisPieceMaterial(
+    cMat: THREE.Material,
+    geometry: THREE.BufferGeometry,
+    randomPatinaKey: 'bronze' | 'verdigris' | 'chrome' | 'marble'
+  ): THREE.Material {
+    const std = cMat as THREE.MeshStandardMaterial;
+    const presets = this.getProceduralPresets();
+
+    // Determine whether this mesh is untextured / plain white or gray (or already tagged as untextured patina)
+    const wasUntexturedPatina = Boolean(
+      cMat.userData?.isFallbackStudioMaterial || cMat.userData?.isUntexturedPatina
+    );
+    const hasTextureMap =
+      !wasUntexturedPatina && Boolean(std.map || std.emissiveMap || std.normalMap);
+    const hasVertexColors = Boolean(geometry.attributes.color);
+    const hsl = { h: 0, s: 0, l: 1 };
+    if (std.color && typeof std.color.getHSL === 'function') {
+      std.color.getHSL(hsl);
+    }
+    const isPlainWhiteOrGray =
+      wasUntexturedPatina || (!hasTextureMap && !hasVertexColors && hsl.s < 0.2 && hsl.l > 0.42);
+
+    const isUntexturedSolidColor = !hasTextureMap && !hasVertexColors && !isPlainWhiteOrGray;
+
+    if (this.daisFinishMode === 'auto-patina') {
+      if (isPlainWhiteOrGray) {
+        // Replace untextured parts with the piece's random procedural museum patina
+        this.ensureGeometryHasUVs(geometry);
+        const preset = presets[randomPatinaKey];
+
+        std.map = preset.map;
+        std.bumpMap = preset.bumpMap;
+        std.bumpScale = preset.bumpScale;
+        std.color?.setHex(preset.color);
+        std.metalness = preset.metalness;
+        std.roughness = preset.roughness;
+        std.userData.isUntexturedPatina = true;
+        std.needsUpdate = true;
+      } else if (isUntexturedSolidColor) {
+        // Give flat-colored untextured parts subtle metallic sheen and brushed bump grain
+        this.ensureGeometryHasUVs(geometry);
+        std.bumpMap = std.bumpMap || presets.bronze.bumpMap;
+        std.bumpScale = 0.012;
+        std.metalness = Math.max(std.metalness ?? 0, 0.52);
+        std.roughness = Math.min(std.roughness ?? 0.5, 0.32);
+        std.needsUpdate = true;
+      }
+      return cMat;
+    }
+
+    // Unified material finish override ('bronze' | 'chrome' | 'marble')
+    this.ensureGeometryHasUVs(geometry);
+    const preset = presets[this.daisFinishMode];
+    std.map = preset.map;
+    std.bumpMap = std.bumpMap || preset.bumpMap;
+    std.bumpScale = preset.bumpScale;
+    std.color?.setHex(preset.color);
+    std.metalness = preset.metalness;
+    std.roughness = preset.roughness;
+    std.vertexColors = false;
+    std.needsUpdate = true;
+    return cMat;
+  }
+  /**
+   * Computes a 10-band vertical cross-section profile (dense medoid centers, effective radii,
+   * solid-core shoulder/pelvis heights, bottom vs. top mass, and sampled 3D vertices) so the
+   * Totem Stacker guarantees deep physical 3D mesh intersections rather than floating bounding boxes:
+   * 1. Sorts the 3 pieces with the heaviest/broadest mass at the bottom
+   * 2. Orients pieces so heavy bases sit down and skinny necks point toward the seam
+   * 3. Finds the true solid-core shoulder (`coreTopSlice`) and pelvis (`coreBottomSlice`) bypassing thin legs/antennae
+   * 4. Uses Dense Vertex Medoids (`denseX`, `denseZ`) instead of empty-space arithmetic means (e.g. between two legs)
+   * 5. Runs a 3D Vertex Penetration Pull-In check so every totem joint physically intersects in 3D space!
+   */
+  private computeVerticalSliceProfile(
+    root: THREE.Object3D,
+    referenceParent: THREE.Group,
+    numSlices = 10
+  ): {
+    bounds: { min: THREE.Vector3; max: THREE.Vector3; size: THREE.Vector3; center: THREE.Vector3 };
+    sliceCx: Float32Array;
+    sliceCz: Float32Array;
+    sliceRadius: Float32Array;
+    coreBottomSlice: number;
+    coreTopSlice: number;
+    coreBottomY: number;
+    coreTopY: number;
+    bulkMass: number;
+    bottomMass: number;
+    topMass: number;
+    midRadius: number;
+    sampledPts: Array<{ x: number; y: number; z: number; slice: number }>;
+  } | null {
+    const bounds = this.computeRobustLocalBounds(root, referenceParent);
+    if (!bounds) return null;
+
+    const minY = bounds.min.y;
+    const spanY = Math.max(bounds.size.y, 0.001);
+    const fallbackRadius = Math.max(bounds.size.x, bounds.size.z) * 0.35;
+
+    const sumX = new Float64Array(numSlices);
+    const sumZ = new Float64Array(numSlices);
+    const counts = new Int32Array(numSlices);
+
+    referenceParent.updateWorldMatrix(true, true);
+    const invParentMatrix = referenceParent.matrixWorld.clone().invert();
+    const localMatrix = new THREE.Matrix4();
+    const v = new THREE.Vector3();
+
+    const sampledPts: Array<{ x: number; y: number; z: number; slice: number }> = [];
+    const sliceBuckets: Array<Array<{ x: number; y: number; z: number }>> = Array.from(
+      { length: numSlices },
+      () => []
+    );
+
+    root.traverse((obj) => {
+      const mesh = obj as THREE.Mesh;
+      if (!mesh.isMesh || !mesh.geometry) return;
+      const pos = mesh.geometry.attributes.position;
+      if (!pos || pos.count === 0) return;
+
+      localMatrix.multiplyMatrices(invParentMatrix, mesh.matrixWorld);
+      const step = Math.max(1, Math.floor(pos.count / 750));
+
+      for (let i = 0; i < pos.count; i += step) {
+        const vx = pos.getX(i);
+        const vy = pos.getY(i);
+        const vz = pos.getZ(i);
+        if (!Number.isFinite(vx) || !Number.isFinite(vy) || !Number.isFinite(vz)) continue;
+        v.set(vx, vy, vz).applyMatrix4(localMatrix);
+
+        const normY = THREE.MathUtils.clamp((v.y - minY) / spanY, 0, 0.9999);
+        const s = Math.floor(normY * numSlices);
+        sumX[s] += v.x;
+        sumZ[s] += v.z;
+        counts[s]++;
+        const pt = { x: v.x, y: v.y, z: v.z, slice: s };
+        sampledPts.push(pt);
+        if (sliceBuckets[s].length < 80) {
+          sliceBuckets[s].push(pt);
+        }
+      }
+    });
+
+    const sliceCx = new Float32Array(numSlices);
+    const sliceCz = new Float32Array(numSlices);
+    const sumR2 = new Float64Array(numSlices);
+
+    // Compute Dense Vertex Medoid per slice so legged/arched/hollow models anchor inside actual mesh geometry
+    // rather than in the empty space between legs!
+    for (let s = 0; s < numSlices; s++) {
+      const bucket = sliceBuckets[s];
+      if (bucket.length > 0) {
+        const meanX = sumX[s] / counts[s];
+        const meanZ = sumZ[s] / counts[s];
+        let bestPt = bucket[0];
+        let bestScore = -Infinity;
+
+        for (let i = 0; i < bucket.length; i++) {
+          const cand = bucket[i];
+          let neighbors = 0;
+          for (let j = 0; j < bucket.length; j++) {
+            const other = bucket[j];
+            const d2 = (cand.x - other.x) ** 2 + (cand.z - other.z) ** 2;
+            if (d2 < 0.045) neighbors++;
+          }
+          // Prefer high local vertex density near the central trunk
+          const distToMean = Math.hypot(cand.x - meanX, cand.z - meanZ);
+          const score = neighbors * 2.5 - distToMean * 4.0;
+          if (score > bestScore) {
+            bestScore = score;
+            bestPt = cand;
+          }
+        }
+        // Blend 70% dense medoid + 30% mean so it stays inside real geometry while centered on the trunk
+        sliceCx[s] = bestPt.x * 0.7 + meanX * 0.3;
+        sliceCz[s] = bestPt.z * 0.7 + meanZ * 0.3;
+      } else {
+        sliceCx[s] = bounds.center.x;
+        sliceCz[s] = bounds.center.z;
+      }
+    }
+
+    for (const pt of sampledPts) {
+      const dx = pt.x - sliceCx[pt.slice];
+      const dz = pt.z - sliceCz[pt.slice];
+      sumR2[pt.slice] += dx * dx + dz * dz;
+    }
+
+    const sliceRadius = new Float32Array(numSlices);
+    for (let s = 0; s < numSlices; s++) {
+      if (counts[s] > 2) {
+        sliceRadius[s] = Math.max(0.04, Math.sqrt(sumR2[s] / counts[s]) * 1.35);
+      } else {
+        sliceRadius[s] = fallbackRadius;
+      }
+    }
+
+    for (let s = 0; s < numSlices; s++) {
+      if (counts[s] === 0) {
+        const prev = s > 0 ? s - 1 : Math.min(numSlices - 1, s + 1);
+        sliceCx[s] = sliceCx[prev];
+        sliceCz[s] = sliceCz[prev];
+        sliceRadius[s] = sliceRadius[prev];
+      }
+    }
+
+    let bottomMass = 0;
+    let topMass = 0;
+    let midRadius = 0;
+    let areaSum = 0;
+    let maxCount = 1;
+
+    for (let s = 0; s < numSlices; s++) {
+      const r2 = sliceRadius[s] * sliceRadius[s];
+      areaSum += r2;
+      if (counts[s] > maxCount) maxCount = counts[s];
+      if (s <= 3) bottomMass += r2;
+      if (s >= numSlices - 4) topMass += r2;
+      if (s >= 2 && s <= 7) midRadius = Math.max(midRadius, sliceRadius[s]);
+    }
+    midRadius = Math.max(midRadius, fallbackRadius * 0.6, 0.08);
+
+    // Find solid-core bottom slice (pelvis) and solid-core top slice (shoulder),
+    // skipping spindly extremities (thin legs, stands, antennae, sword tips)
+    let coreBottomSlice = 1;
+    for (let s = 0; s <= 4; s++) {
+      if (counts[s] >= maxCount * 0.28 && sliceRadius[s] >= midRadius * 0.48) {
+        coreBottomSlice = s;
+        break;
+      }
+    }
+
+    let coreTopSlice = numSlices - 2;
+    for (let s = numSlices - 1; s >= 5; s--) {
+      if (counts[s] >= maxCount * 0.28 && sliceRadius[s] >= midRadius * 0.48) {
+        coreTopSlice = s;
+        break;
+      }
+    }
+
+    const coreBottomY = minY + ((coreBottomSlice + 0.5) / numSlices) * spanY;
+    const coreTopY = minY + ((coreTopSlice + 0.5) / numSlices) * spanY;
+
+    const footprintArea = bounds.size.x * bounds.size.z;
+    const bulkMass = (areaSum / numSlices) * 1.6 + footprintArea * 0.45 + bottomMass * 0.25;
+
+    return {
+      bounds,
+      sliceCx,
+      sliceCz,
+      sliceRadius,
+      coreBottomSlice,
+      coreTopSlice,
+      coreBottomY,
+      coreTopY,
+      bulkMass,
+      bottomMass,
+      topMass,
+      midRadius,
+      sampledPts,
+    };
+  }
+
+  public rebuildDaisCollision(triggerReveal = true): boolean {
+    if (!this.daisSlot) return false;
+    this.clearDaisModels();
+
+    const availableSlots = this.slots.filter((s) => s.modelRoot !== null && s.asset !== null);
+    if (availableSlots.length === 0) {
+      this.daisSlot.sourceSlotIndices = [];
+      this.daisSlot.sourceAssets = [];
+      this.daisSlot.stats = null;
+      this.updateDaisLecternTexture();
+      return false;
+    }
+
+    // Choose up to 3 distinct pedestals to collide
+    let chosenSlots: InternalPedestalSlot[];
+    if (availableSlots.length >= 4) {
+      const combos = [
+        [0, 1, 2],
+        [0, 1, 3],
+        [0, 2, 3],
+        [1, 2, 3],
+      ];
+      const combo = combos[this.daisSlot.combinationCursor % combos.length];
+      this.daisSlot.combinationCursor++;
+      chosenSlots = combo.map((i) => this.slots[i]).filter((s) => s && s.modelRoot && s.asset);
+    } else {
+      chosenSlots = availableSlots.slice(0, 3);
+    }
+
+    const daisMasterGroup = new THREE.Group();
+    daisMasterGroup.userData.slotIndex = DAIS_SLOT_INDEX;
+
+    let totalVerts = 0;
+    let totalTris = 0;
+    let totalMeshes = 0;
+    const baseTheta = Math.random() * Math.PI * 2;
+
+    interface PreparedDaisPiece {
+      slotIndex: number;
+      asset: Discovered3DAsset;
+      unitGroup: THREE.Group;
+      colliderGroup: THREE.Group;
+      bulkMass: number;
+      bottomMass: number;
+      topMass: number;
+      rawSize: THREE.Vector3;
+    }
+
+    const preparedPieces: PreparedDaisPiece[] = [];
+
+    for (let idx = 0; idx < chosenSlots.length; idx++) {
+      const slot = chosenSlots[idx];
+      if (!slot.modelRoot || !slot.asset) continue;
+
+      // 1. Temporarily restore full-resolution original materials on the source pedestal
+      //    so our clone always gets the native PBR textures even if the pedestal is far away
+      slot.modelRoot.traverse((obj) => {
+        const mesh = obj as THREE.Mesh;
+        if (mesh.isMesh) {
+          const orig = slot.originalMaterials.get(mesh);
+          if (orig) mesh.material = orig;
+        }
+      });
+
+      const sourceInner = slot.modelRoot.children[0] || slot.modelRoot;
+      let clonedPiece: THREE.Object3D;
+      try {
+        clonedPiece = cloneSkeleton(sourceInner);
+      } catch {
+        clonedPiece = sourceInner.clone(true);
+      }
+
+      // Restore the source pedestal's current LOD state immediately
+      this.applySlotLodTier(slot, slot.lodTier);
+
+      // Reset root transforms on the cloned piece so pedestal normalization doesn't double-apply
+      clonedPiece.position.set(0, 0, 0);
+      clonedPiece.rotation.set(0, 0, 0);
+      clonedPiece.scale.set(1, 1, 1);
+
+      const patinaChoices: Array<'bronze' | 'verdigris' | 'chrome' | 'marble'> = [
+        'bronze',
+        'verdigris',
+        'chrome',
+        'marble',
+      ];
+      const randomPiecePatina =
+        patinaChoices[Math.floor(Math.random() * patinaChoices.length)];
+
+      // Clone material instances and apply procedural patina to any untextured/white meshes
+      clonedPiece.traverse((obj) => {
+        obj.userData.slotIndex = DAIS_SLOT_INDEX;
+        const mesh = obj as THREE.Mesh;
+        if (mesh.isMesh && mesh.geometry) {
+          mesh.castShadow = true;
+          mesh.receiveShadow = true;
+
+          if (Array.isArray(mesh.material)) {
+            mesh.material = mesh.material.map((m) => {
+              const cMat = this.upgradeDaisPieceMaterial(
+                m.clone(),
+                mesh.geometry,
+                randomPiecePatina
+              );
+              if ('wireframe' in cMat) {
+                (cMat as THREE.MeshStandardMaterial).wireframe = this.wireframeEnabled;
+              }
+              this.daisSlot.clonedMaterials.push(cMat);
+              return cMat;
+            });
+          } else if (mesh.material) {
+            const cMat = this.upgradeDaisPieceMaterial(
+              mesh.material.clone(),
+              mesh.geometry,
+              randomPiecePatina
+            );
+            if ('wireframe' in cMat) {
+              (cMat as THREE.MeshStandardMaterial).wireframe = this.wireframeEnabled;
+            }
+            this.daisSlot.clonedMaterials.push(cMat);
+            mesh.material = cMat;
+          }
+        }
+      });
+
+      const pieceStats = this.computeStatsAndPrepareMeshes(clonedPiece);
+      totalVerts += pieceStats.vertices;
+      totalTris += pieceStats.triangles;
+      totalMeshes += pieceStats.meshes;
+
+      // 2. Center and normalize each individual piece inside its own unitGroup (~1.18m span)
+      //    so 3D rotations spin around the object's true center of mass!
+      const unitGroup = new THREE.Group();
+      unitGroup.add(clonedPiece);
+      let rawSize = new THREE.Vector3(1, 1, 1);
+      const rawBounds = this.computeRobustLocalBounds(clonedPiece, unitGroup);
+      if (rawBounds) {
+        const maxDim = Math.max(rawBounds.size.x, rawBounds.size.y, rawBounds.size.z, 0.001);
+        const unitScale = 1.18 / maxDim;
+        clonedPiece.scale.setScalar(unitScale);
+        const centeredBounds = this.computeRobustLocalBounds(clonedPiece, unitGroup);
+        if (centeredBounds) {
+          clonedPiece.position.sub(centeredBounds.center);
+          rawSize = centeredBounds.size.clone();
+        }
+      }
+
+      const initProfile = this.computeVerticalSliceProfile(unitGroup, unitGroup);
+      const colliderGroup = new THREE.Group();
+      colliderGroup.add(unitGroup);
+
+      preparedPieces.push({
+        slotIndex: slot.index,
+        asset: slot.asset,
+        unitGroup,
+        colliderGroup,
+        bulkMass: initProfile ? initProfile.bulkMass : 1,
+        bottomMass: initProfile ? initProfile.bottomMass : 1,
+        topMass: initProfile ? initProfile.topMass : 1,
+        rawSize,
+      });
+    }
+
+    if (this.daisAssemblyMode === 'totem') {
+      // HEURISTIC 1: Mass & Footprint Sorting — place the heaviest, broadest mass at the bottom
+      //              and the lightest/slenderest finial at the crown!
+      preparedPieces.sort((a, b) => b.bulkMass - a.bulkMass);
+
+      let prevProfile: ReturnType<typeof this.computeVerticalSliceProfile> = null;
+      const tierScales = [1.14, 0.96, 0.84];
+
+      for (let idx = 0; idx < preparedPieces.length; idx++) {
+        const piece = preparedPieces[idx];
+        const { unitGroup, colliderGroup } = piece;
+
+        // HEURISTIC 2: Taper & Upright Orientation
+        // - For Tier 0 (Base): if the object is top-heavy (top half > 1.28× wider than bottom half),
+        //   invert it so the broad heavy mass anchors the base and the skinny neck points up!
+        // - For Tier 1 & 2: if the object's top is much narrower than its bottom, flip it 50% of the time
+        //   or orient its narrower waist toward the lower piece's neck for a clean hourglass/socket joint.
+        if (idx === 0 && piece.topMass > piece.bottomMass * 1.28) {
+          unitGroup.rotation.z = Math.PI;
+        } else if (idx > 0 && piece.topMass < piece.bottomMass * 0.72) {
+          unitGroup.rotation.z = Math.PI;
+        }
+
+        colliderGroup.scale.setScalar(tierScales[idx] ?? 0.85);
+        colliderGroup.rotation.set(
+          (Math.random() - 0.5) * 0.09,
+          Math.random() * Math.PI * 2,
+          (Math.random() - 0.5) * 0.09
+        );
+        daisMasterGroup.add(colliderGroup);
+
+        const curProfile = this.computeVerticalSliceProfile(colliderGroup, daisMasterGroup);
+        if (!curProfile) continue;
+
+        if (idx === 0 || !prevProfile) {
+          // Ground Tier 0 cleanly at (0, 0, 0) using its bottom-core medoid
+          const baseSlice = curProfile.coreBottomSlice;
+          const baseCx = curProfile.sliceCx[baseSlice];
+          const baseCz = curProfile.sliceCz[baseSlice];
+          colliderGroup.position.x -= baseCx;
+          colliderGroup.position.z -= baseCz;
+          colliderGroup.position.y -= curProfile.bounds.min.y;
+        } else {
+          // HEURISTIC 3: Solid-Core Shoulder-to-Pelvis Sinking + Dynamic Skinny-Neck Overlap
+          // Instead of touching extreme bounding-box tips (`max.y` to `min.y`), we weld the upper piece's
+          // solid-core pelvis (`coreBottomY`) directly into the lower piece's solid-core shoulder (`coreTopY`),
+          // PLUS an additional 24%–42% deep socket penetration so skinny parts deeply interpenetrate!
+          const lowerTipR =
+            (prevProfile.sliceRadius[7] + prevProfile.sliceRadius[8] + prevProfile.sliceRadius[9]) / 3;
+          const upperTipR =
+            (curProfile.sliceRadius[0] + curProfile.sliceRadius[1] + curProfile.sliceRadius[2]) / 3;
+          const combinedMidR = Math.max(prevProfile.midRadius + curProfile.midRadius, 0.15);
+          const taperRatio = (lowerTipR + upperTipR) / combinedMidR;
+
+          const extraCorePenetrationFrac = THREE.MathUtils.clamp(
+            0.38 - taperRatio * 0.18,
+            0.22,
+            0.42
+          );
+          const segHeight = Math.max(curProfile.bounds.size.y, 0.15);
+          const lowerHeight = Math.max(prevProfile.bounds.size.y, 0.15);
+          const extraDepth = Math.min(
+            segHeight * extraCorePenetrationFrac,
+            lowerHeight * 0.42
+          );
+
+          // HEURISTIC 4: Dense Medoid Contact-Slice Alignment
+          const lowerWeldSlice = Math.max(4, prevProfile.coreTopSlice - 1);
+          const upperWeldSlice = Math.min(5, curProfile.coreBottomSlice + 1);
+
+          const targetSeamX = prevProfile.sliceCx[lowerWeldSlice];
+          const targetSeamZ = prevProfile.sliceCz[lowerWeldSlice];
+          const upperSeamX = curProfile.sliceCx[upperWeldSlice];
+          const upperSeamZ = curProfile.sliceCz[upperWeldSlice];
+
+          const dx = targetSeamX - upperSeamX;
+          const dz = targetSeamZ - upperSeamZ;
+          const dy = prevProfile.coreTopY - curProfile.coreBottomY - extraDepth;
+
+          colliderGroup.position.x += dx;
+          colliderGroup.position.z += dz;
+          colliderGroup.position.y += dy;
+
+          // HEURISTIC 5: Direct 3D Vertex Cloud Pull-In Verification
+          // Check the actual 3D Euclidean distance between the lower piece's upper-half vertices
+          // and the upper piece's lower-half vertices after shifting. If they aren't deeply
+          // intersecting yet, pull the upper piece straight into the nearest dense vertex of the lower piece!
+          let bestDistSq = Infinity;
+          let bestLowerPt: { x: number; y: number; z: number } | null = null;
+          let bestUpperPt: { x: number; y: number; z: number } | null = null;
+
+          const lowerCandidates = prevProfile.sampledPts.filter((p) => p.slice >= 4);
+          const upperCandidates = curProfile.sampledPts.filter((p) => p.slice <= 5);
+          const lStep = Math.max(1, Math.floor(lowerCandidates.length / 120));
+          const uStep = Math.max(1, Math.floor(upperCandidates.length / 120));
+
+          for (let li = 0; li < lowerCandidates.length; li += lStep) {
+            const lp = lowerCandidates[li];
+            for (let ui = 0; ui < upperCandidates.length; ui += uStep) {
+              const up = upperCandidates[ui];
+              const ux = up.x + dx;
+              const uy = up.y + dy;
+              const uz = up.z + dz;
+              const dSq = (lp.x - ux) ** 2 + (lp.y - uy) ** 2 + (lp.z - uz) ** 2;
+              if (dSq < bestDistSq) {
+                bestDistSq = dSq;
+                bestLowerPt = lp;
+                bestUpperPt = { x: ux, y: uy, z: uz };
+              }
+            }
+          }
+
+          if (bestLowerPt && bestUpperPt) {
+            // Pull the upper piece's closest vertex cluster 0.14m inside the lower piece's vertex cluster!
+            const pullX = bestLowerPt.x - bestUpperPt.x;
+            const pullY = bestLowerPt.y - bestUpperPt.y - 0.12;
+            const pullZ = bestLowerPt.z - bestUpperPt.z;
+            colliderGroup.position.x += pullX * 0.85;
+            colliderGroup.position.z += pullZ * 0.85;
+            if (pullY < 0) {
+              colliderGroup.position.y += pullY * 0.75;
+            }
+          }
+        }
+
+        // Re-measure profile in its final world-stacked pose so the next tier stacks onto its true coordinates
+        prevProfile = this.computeVerticalSliceProfile(colliderGroup, daisMasterGroup);
+      }
+    } else {
+      // 3B. Chaotic 3D Intersecting Collision Transforms
+      for (let idx = 0; idx < preparedPieces.length; idx++) {
+        const { colliderGroup } = preparedPieces[idx];
+        if (idx === 0) {
+          colliderGroup.scale.setScalar(0.96 + Math.random() * 0.22);
+          colliderGroup.rotation.set(
+            (Math.random() - 0.5) * 0.85,
+            Math.random() * Math.PI * 2,
+            (Math.random() - 0.5) * 0.85
+          );
+          colliderGroup.position.set(0, 0, 0);
+        } else if (idx === 1) {
+          colliderGroup.scale.setScalar(0.84 + Math.random() * 0.28);
+          colliderGroup.rotation.set(
+            Math.random() * Math.PI * 2,
+            Math.random() * Math.PI * 2,
+            Math.random() * Math.PI * 2
+          );
+          const r1 = 0.14 + Math.random() * 0.14;
+          colliderGroup.position.set(
+            Math.cos(baseTheta) * r1,
+            (Math.random() - 0.35) * 0.26,
+            Math.sin(baseTheta) * r1
+          );
+        } else {
+          colliderGroup.scale.setScalar(0.8 + Math.random() * 0.32);
+          colliderGroup.rotation.set(
+            Math.random() * Math.PI * 2,
+            Math.random() * Math.PI * 2,
+            Math.random() * Math.PI * 2
+          );
+          const theta2 = baseTheta + Math.PI * (0.65 + Math.random() * 0.7);
+          const r2 = 0.14 + Math.random() * 0.15;
+          colliderGroup.position.set(
+            Math.cos(theta2) * r2,
+            (Math.random() - 0.3) * 0.3,
+            Math.sin(theta2) * r2
+          );
+        }
+        daisMasterGroup.add(colliderGroup);
+      }
+    }
+
+    this.daisSlot.modelRoot = daisMasterGroup;
+    this.daisSlot.sourceSlotIndices = preparedPieces.map((p) => p.slotIndex);
+    this.daisSlot.sourceAssets = preparedPieces.map((p) => p.asset);
+    this.daisSlot.collisionCount++;
+    this.newShowroomModelsSinceDaisRebuild = 0;
+    this.daisSlot.modelPivot.rotation.set(0, 0, 0);
+    this.daisSlot.modelPivot.add(daisMasterGroup);
+
+    // 4. Frame and ground the combined 3-object sculpture onto the Central Dais
+    const normResult = this.normalizeObjectOnPivot(
+      daisMasterGroup,
+      this.daisSlot.modelPivot,
+      this.daisAssemblyMode === 'totem'
+        ? { maxHorizontalDiameter: 1.72, maxHeight: 2.12 }
+        : { maxHorizontalDiameter: 1.88, maxHeight: 1.78 }
+    );
+
+    this.daisSlot.stats = {
+      vertices: totalVerts,
+      triangles: totalTris,
+      meshes: totalMeshes,
+      scaleFactor: normResult.scaleFactor,
+      scaleLabel: normResult.scaleLabel,
+    };
+
+    const shadowSpan = THREE.MathUtils.clamp(
+      Math.max(normResult.footprintX, normResult.footprintZ) * 1.08,
+      0.85,
+      1.85
+    );
+    this.daisSlot.contactShadowMesh.scale.set(shadowSpan, shadowSpan, 1);
+    this.daisSlot.contactShadowMesh.visible = true;
+
+    this.daisSlot.sculptureName = null;
+    this.daisSlot.namingRequestId++;
+    const canName = this.mode === 'showroom' && this.daisSlot.sourceAssets.length >= 2;
+    this.daisSlot.isNamingSculpture = canName;
+
+    this.updateDaisLecternTexture();
+    if (triggerReveal) {
+      this.triggerDaisRevealEffect();
+    }
+
+    if (canName) {
+      void this.requestGeminiSculptureName(this.daisSlot.namingRequestId);
+    }
+
+    return true;
+  }
+
+  /**
+   * Captures 3 multi-angle 256×256 JPEG snapshots of the Central Dais sculpture
+   * using the primary WebGLRenderer (so all resident PBR textures & lighting are preserved)
+   * and immediately restores the user camera frame so no flicker occurs.
+   */
+  public captureDaisSculptureSnapshots(
+    angles = [-0.68, 0.68, 2.38],
+    thumbSize = 256
+  ): string[] {
+    const dais = this.daisSlot;
+    const modelRoot = dais?.modelRoot;
+    if (!dais || !modelRoot) return [];
+    const prevShowroomVis = this.showroomGroup.visible;
+    const prevStudioVis = this.studioPivot.visible;
+    const prevPivotY = dais.modelPivot.position.y;
+    const prevPivotScale = dais.modelPivot.scale.x;
+    const prevPivotRotY = dais.modelPivot.rotation.y;
+    const prevLecternVis = dais.lecternGroup.visible;
+    const prevHaloVis = dais.haloRippleMesh.visible;
+    const prevSmokeVis = dais.smokePuffPoints.visible;
+    const prevDustVis = dais.dustMotesPoints.visible;
+    const prevConeVis = dais.lightCone.visible;
+    const prevLightIntensity = dais.daisLight.intensity;
+
+    // Position the sculpture cleanly at its resting height on the Dais for crisp photography
+    this.showroomGroup.visible = true;
+    this.studioPivot.visible = false;
+    dais.modelPivot.position.y = DAIS_HEIGHT + 0.054;
+    dais.modelPivot.scale.setScalar(1.0);
+    dais.modelPivot.rotation.y = 0;
+    dais.lecternGroup.visible = false;
+    dais.haloRippleMesh.visible = false;
+    dais.smokePuffPoints.visible = false;
+    dais.dustMotesPoints.visible = false;
+    dais.lightCone.visible = false;
+    dais.daisLight.intensity = 4.2;
+
+    this.scene.updateMatrixWorld(true);
+
+    const bounds = new THREE.Box3().setFromObject(modelRoot);
+    const center = new THREE.Vector3();
+    const size = new THREE.Vector3();
+    bounds.getCenter(center);
+    bounds.getSize(size);
+    const maxDim = Math.max(size.x, size.y, size.z, 0.65);
+    const camDist = maxDim * 1.62;
+
+    const thumbCanvas = document.createElement('canvas');
+    thumbCanvas.width = thumbSize;
+    thumbCanvas.height = thumbSize;
+    const ctx = thumbCanvas.getContext('2d');
+    const snapshots: string[] = [];
+
+    const cw = this.canvas.width;
+    const ch = this.canvas.height;
+    const cropSpan = Math.min(cw, ch);
+    const sx = (cw - cropSpan) * 0.5;
+    const sy = (ch - cropSpan) * 0.5;
+
+    this.daisSnapshotCamera.aspect = cw / Math.max(1, ch);
+    this.daisSnapshotCamera.updateProjectionMatrix();
+
+    for (const angle of angles) {
+      this.daisSnapshotCamera.position.set(
+        center.x + Math.sin(angle) * camDist,
+        center.y + maxDim * 0.26,
+        center.z + Math.cos(angle) * camDist
+      );
+      this.daisSnapshotCamera.lookAt(center);
+      this.daisSnapshotCamera.updateMatrixWorld(true);
+
+      this.renderer.render(this.scene, this.daisSnapshotCamera);
+
+      if (ctx && cropSpan > 0) {
+        ctx.clearRect(0, 0, thumbSize, thumbSize);
+        ctx.drawImage(this.canvas, sx, sy, cropSpan, cropSpan, 0, 0, thumbSize, thumbSize);
+        const dataUrl = thumbCanvas.toDataURL('image/jpeg', 0.8);
+        snapshots.push(dataUrl.replace(/^data:image\/jpeg;base64,/, ''));
+      }
+    }
+
+    // Restore scene & Dais reveal state and immediately re-render the user's active view
+    this.showroomGroup.visible = prevShowroomVis;
+    this.studioPivot.visible = prevStudioVis;
+    dais.modelPivot.position.y = prevPivotY;
+    dais.modelPivot.scale.setScalar(prevPivotScale);
+    dais.modelPivot.rotation.y = prevPivotRotY;
+    dais.lecternGroup.visible = prevLecternVis;
+    dais.haloRippleMesh.visible = prevHaloVis;
+    dais.smokePuffPoints.visible = prevSmokeVis;
+    dais.dustMotesPoints.visible = prevDustVis;
+    dais.lightCone.visible = prevConeVis;
+    dais.daisLight.intensity = prevLightIntensity;
+
+    this.scene.updateMatrixWorld(true);
+    this.renderer.render(this.scene, this.camera);
+
+    return snapshots;
+  }
+
+  private async requestGeminiSculptureName(requestId: number): Promise<void> {
+    // Wait one animation frame so all textures and buffers are settled on the GPU
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    if (!this.daisSlot || this.daisSlot.namingRequestId !== requestId) return;
+
+    const snapshots = this.captureDaisSculptureSnapshots();
+    if (snapshots.length === 0) {
+      this.daisSlot.isNamingSculpture = false;
+      this.updateDaisLecternTexture();
+      return;
+    }
+
+    const generatedName = await generateSculptureNameForDais({
+      imagesBase64Jpeg: snapshots,
+      assemblyMode: this.daisAssemblyMode,
+    });
+
+    if (!this.daisSlot || this.daisSlot.namingRequestId !== requestId) return;
+
+    this.daisSlot.isNamingSculpture = false;
+    if (generatedName) {
+      this.daisSlot.sculptureName = generatedName;
+      this.updateDaisLecternTexture();
+      this.onDaisSculptureNamed?.(generatedName);
+    } else {
+      this.updateDaisLecternTexture();
+    }
   }
 
   /**
@@ -1712,16 +3328,32 @@ export class ThreeModelViewer {
       this.updateSlotLecternTexture(s);
     }
 
+    if (this.daisSlot) {
+      const daisMat = this.daisSlot.ringMesh.material as THREE.MeshBasicMaterial;
+      daisMat.color.setHex(slotIndex === DAIS_SLOT_INDEX ? 0xfbbf24 : 0xc084fc);
+      this.updateDaisLecternTexture();
+    }
+
     if (notifyHUD) {
       this.onPedestalSelect?.(slotIndex);
     }
   }
 
   /**
-   * Automatically detects which plinth the visitor is standing in front of / looking at
+   * Automatically detects which plinth (or the Central Dais) the visitor is standing in front of
    * while walking around the gallery, and updates the active plinth ring, lectern plaque,
-   * and top HUD bar (#1–#4 + yellow-outlined Dataset/Download links).
+   * and top HUD bar (#1–#4 + ⚡ Dais).
    */
+  private lastDaisProximity = false;
+
+  public isInDaisProximity(): boolean {
+    if (this.focusedSlotIndex !== DAIS_SLOT_INDEX) return false;
+    if (this.camGlideActive) return true;
+    const dx = this.camera.position.x - DAIS_POSITION.x;
+    const dz = this.camera.position.z - DAIS_POSITION.z;
+    return Math.hypot(dx, dz) <= 5.2;
+  }
+
   private updateActivePedestalByProximity(): void {
     if (this.camGlideActive) return;
 
@@ -1737,7 +3369,14 @@ export class ThreeModelViewer {
     let bestSlot = -1;
     let bestScore = -Infinity;
 
-    for (const slot of this.slots) {
+    const candidates: Array<{ index: number; position: THREE.Vector3 }> = [
+      ...this.slots.map((s) => ({ index: s.index, position: s.position })),
+    ];
+    if (this.daisSlot) {
+      candidates.push({ index: DAIS_SLOT_INDEX, position: this.daisSlot.position });
+    }
+
+    for (const slot of candidates) {
       const dx = slot.position.x - camX;
       const dz = slot.position.z - camZ;
       const horizDist = Math.hypot(dx, dz);
@@ -1762,6 +3401,12 @@ export class ThreeModelViewer {
 
     if (bestSlot !== -1 && bestSlot !== this.focusedSlotIndex) {
       this.setFocusedSlotHighlight(bestSlot, true);
+    }
+
+    const nowNearDais = this.isInDaisProximity();
+    if (nowNearDais !== this.lastDaisProximity) {
+      this.lastDaisProximity = nowNearDais;
+      this.onPedestalSelect?.(this.focusedSlotIndex);
     }
   }
 
@@ -1853,9 +3498,33 @@ export class ThreeModelViewer {
   }
 
   public focusPedestal(slotIndex: number, animate = true): void {
+    if (slotIndex === DAIS_SLOT_INDEX && this.daisSlot) {
+      const targetCenter = new THREE.Vector3(
+        DAIS_POSITION.x,
+        DAIS_HEIGHT + 0.65,
+        DAIS_POSITION.z
+      );
+      const desiredCamPos = new THREE.Vector3(
+        DAIS_POSITION.x,
+        DAIS_HEIGHT + 1.24,
+        DAIS_POSITION.z + 3.55
+      );
+      if (animate) {
+        this.camGlideGoalTarget.copy(targetCenter);
+        this.camGlideGoalPos.copy(desiredCamPos);
+        this.camGlideActive = true;
+      } else {
+        this.controls.target.copy(targetCenter);
+        this.camera.position.copy(desiredCamPos);
+        this.controls.update();
+      }
+      this.setFocusedSlotHighlight(DAIS_SLOT_INDEX, false);
+      this.lastDaisProximity = this.isInDaisProximity();
+      return;
+    }
+
     const slot = this.slots[slotIndex];
     if (!slot) return;
-    this.setFocusedSlotHighlight(slotIndex, false);
 
     const targetCenter = new THREE.Vector3(
       slot.position.x,
@@ -1877,6 +3546,8 @@ export class ThreeModelViewer {
       this.camera.position.copy(desiredCamPos);
       this.controls.update();
     }
+    this.setFocusedSlotHighlight(slotIndex, false);
+    this.lastDaisProximity = this.isInDaisProximity();
   }
 
   private updateSize(): void {
@@ -1993,6 +3664,79 @@ export class ThreeModelViewer {
         slot.dustMotesPoints.visible = false;
       }
     }
+
+    // Update Central Dais reveal animation if active
+    if (this.daisSlot && this.daisSlot.revealTimer > 0) {
+      const dais = this.daisSlot;
+      dais.revealTimer = Math.max(0, dais.revealTimer - delta);
+      const t = 1 - dais.revealTimer / REVEAL_DURATION;
+      const easeOutCubic = 1 - Math.pow(1 - t, 3);
+      const easeOutQuart = 1 - Math.pow(1 - t, 4);
+
+      dais.modelPivot.position.y = THREE.MathUtils.lerp(
+        DAIS_HEIGHT - 0.22,
+        DAIS_HEIGHT + 0.054,
+        easeOutQuart
+      );
+      dais.modelPivot.scale.setScalar(THREE.MathUtils.lerp(0.74, 1.0, easeOutCubic));
+
+      const flareEnvelope = Math.sin(Math.pow(t, 0.58) * Math.PI);
+      dais.daisLight.intensity = 2.5 + flareEnvelope * 7.5;
+      dais.lightConeMat.opacity = 0.05 + flareEnvelope * 0.3;
+
+      const rippleScale = 0.55 + easeOutCubic * 0.95;
+      dais.haloRippleMesh.scale.set(rippleScale, rippleScale, 1);
+      dais.haloRippleMat.opacity = (1 - easeOutCubic) * 0.9;
+
+      const smokePosAttr = dais.smokePuffPoints.geometry.getAttribute(
+        'position'
+      ) as THREE.BufferAttribute;
+      const smokeArr = smokePosAttr.array as Float32Array;
+      const smokeCount = smokeArr.length / 3;
+      for (let s = 0; s < smokeCount; s++) {
+        const baseAngle = dais.smokeSeeds[s * 4];
+        const speed = dais.smokeSeeds[s * 4 + 1];
+        const heightDrift = dais.smokeSeeds[s * 4 + 2];
+        const phase = dais.smokeSeeds[s * 4 + 3];
+        const radius = 0.2 + easeOutCubic * 1.15 * speed;
+        const swirlAngle = baseAngle + easeOutCubic * 0.45;
+        smokeArr[s * 3] = Math.cos(swirlAngle) * radius;
+        smokeArr[s * 3 + 1] =
+          0.02 + easeOutCubic * heightDrift + Math.sin(t * 5 + phase) * 0.025;
+        smokeArr[s * 3 + 2] = Math.sin(swirlAngle) * radius;
+      }
+      smokePosAttr.needsUpdate = true;
+      dais.smokePuffMat.opacity = Math.sin(Math.pow(t, 0.65) * Math.PI) * 0.55;
+
+      const dustPosAttr = dais.dustMotesPoints.geometry.getAttribute(
+        'position'
+      ) as THREE.BufferAttribute;
+      const dustArr = dustPosAttr.array as Float32Array;
+      const dustCount = dustArr.length / 3;
+      for (let d = 0; d < dustCount; d++) {
+        const baseAngle = dais.dustSeeds[d * 4];
+        const baseRadius = dais.dustSeeds[d * 4 + 1];
+        const baseHeight = dais.dustSeeds[d * 4 + 2];
+        const upSpeed = dais.dustSeeds[d * 4 + 3];
+        const spiralAngle = baseAngle + t * 2.6 * upSpeed;
+        const radius = baseRadius * (1 - t * 0.2);
+        dustArr[d * 3] = Math.cos(spiralAngle) * radius;
+        dustArr[d * 3 + 1] = baseHeight + easeOutCubic * 1.65 * upSpeed;
+        dustArr[d * 3 + 2] = Math.sin(spiralAngle) * radius;
+      }
+      dustPosAttr.needsUpdate = true;
+      dais.dustMotesMat.opacity = Math.sin(Math.pow(t, 0.55) * Math.PI) * 0.92;
+
+      if (dais.revealTimer === 0) {
+        dais.modelPivot.position.y = DAIS_HEIGHT + 0.054;
+        dais.modelPivot.scale.setScalar(1.0);
+        dais.daisLight.intensity = 2.5;
+        dais.lightConeMat.opacity = 0.05;
+        dais.haloRippleMesh.visible = false;
+        dais.smokePuffPoints.visible = false;
+        dais.dustMotesPoints.visible = false;
+      }
+    }
   }
 
   private renderTick(): void {
@@ -2092,6 +3836,10 @@ export class ThreeModelViewer {
         visibleOnScreen,
         isFocused: slot.index === this.focusedSlotIndex,
       });
+    }
+
+    if (this.daisSlot?.modelRoot && this.autoRotateEnabled) {
+      this.daisSlot.modelPivot.rotation.y += delta * 0.36;
     }
 
     this.onShowroomProjectionUpdate?.(states);
@@ -2234,6 +3982,7 @@ export class ThreeModelViewer {
   }
 
   private disposeTexture(tex: THREE.Texture): void {
+    if (tex.userData?.isPersistentProcedural) return;
     const sourceData = tex.source?.data as { close?: () => void } | undefined;
     if (sourceData && typeof sourceData.close === 'function') {
       try {
@@ -2290,38 +4039,51 @@ export class ThreeModelViewer {
     signal: AbortSignal,
     onProgress?: (percent: number | null) => void
   ): Promise<ArrayBuffer> {
-    const response = await fetch(url, { signal });
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status} fetching ${url}`);
-    }
+    const timeoutController = new AbortController();
+    const timeoutId = window.setTimeout(() => timeoutController.abort(), 9000);
+    const onParentAbort = () => timeoutController.abort();
+    signal.addEventListener('abort', onParentAbort, { once: true });
 
-    const contentLength = Number(response.headers.get('content-length') || 0);
-    if (!response.body || contentLength <= 0) {
-      onProgress?.(null);
-      return await response.arrayBuffer();
-    }
-
-    const reader = response.body.getReader();
-    const chunks: Uint8Array[] = [];
-    let receivedLength = 0;
-
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      if (value) {
-        chunks.push(value);
-        receivedLength += value.byteLength;
-        onProgress?.(Math.min(100, Math.round((receivedLength / contentLength) * 100)));
+    try {
+      const response = await fetch(url, { signal: timeoutController.signal });
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status} fetching ${url}`);
       }
-    }
 
-    const combined = new Uint8Array(receivedLength);
-    let offset = 0;
-    for (const chunk of chunks) {
-      combined.set(chunk, offset);
-      offset += chunk.byteLength;
+      const contentLength = Number(response.headers.get('content-length') || 0);
+      if (contentLength > 20 * 1024 * 1024) {
+        throw new Error(`Model file too large (${Math.round(contentLength / 1048576)}MB)`);
+      }
+      if (!response.body || contentLength <= 0) {
+        onProgress?.(null);
+        return await response.arrayBuffer();
+      }
+
+      const reader = response.body.getReader();
+      const chunks: Uint8Array[] = [];
+      let receivedLength = 0;
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (value) {
+          chunks.push(value);
+          receivedLength += value.byteLength;
+          onProgress?.(Math.min(100, Math.round((receivedLength / contentLength) * 100)));
+        }
+      }
+
+      const combined = new Uint8Array(receivedLength);
+      let offset = 0;
+      for (const chunk of chunks) {
+        combined.set(chunk, offset);
+        offset += chunk.byteLength;
+      }
+      return combined.buffer;
+    } finally {
+      window.clearTimeout(timeoutId);
+      signal.removeEventListener('abort', onParentAbort);
     }
-    return combined.buffer;
   }
 
   private async parseAssetGeometry(
@@ -2375,6 +4137,7 @@ export class ThreeModelViewer {
         roughness: 0.38,
         metalness: 0.18,
       });
+      material.userData.isFallbackStudioMaterial = true;
       const mesh = new THREE.Mesh(geometry, material);
       const group = new THREE.Group();
       group.add(mesh);
@@ -2410,11 +4173,25 @@ export class ThreeModelViewer {
       }
     }
 
-    if (this.activeAbortController) {
-      this.activeAbortController.abort();
+    let resolvedSlotIdx: number | undefined = targetPedestalSlot;
+    if (this.mode === 'showroom' && resolvedSlotIdx === undefined) {
+      const emptySlot = this.slots.find((s) => s.modelRoot === null);
+      if (emptySlot) {
+        resolvedSlotIdx = emptySlot.index;
+      } else {
+        resolvedSlotIdx = this.nextReplaceSlotIndex;
+        this.nextReplaceSlotIndex = (this.nextReplaceSlotIndex + 1) % 4;
+      }
     }
+
     const abortController = new AbortController();
-    this.activeAbortController = abortController;
+    if (resolvedSlotIdx !== undefined && resolvedSlotIdx >= 0 && resolvedSlotIdx < 4) {
+      this.slotAbortControllers[resolvedSlotIdx]?.abort();
+      this.slotAbortControllers[resolvedSlotIdx] = abortController;
+    } else {
+      this.activeAbortController?.abort();
+      this.activeAbortController = abortController;
+    }
 
     const { rootObject, animations, stats } = await this.parseAssetGeometry(
       asset,
@@ -2422,19 +4199,15 @@ export class ThreeModelViewer {
       onProgress
     );
 
-    if (this.mode === 'showroom' || targetPedestalSlot !== undefined) {
-      let slotIdx = targetPedestalSlot;
-      if (slotIdx === undefined) {
-        const emptySlot = this.slots.find((s) => s.modelRoot === null);
-        if (emptySlot) {
-          slotIdx = emptySlot.index;
-        } else {
-          slotIdx = this.nextReplaceSlotIndex;
-          this.nextReplaceSlotIndex = (this.nextReplaceSlotIndex + 1) % 4;
-        }
-      }
+    if (this.mode === 'showroom' || resolvedSlotIdx !== undefined) {
+      const slotIdx = resolvedSlotIdx ?? 0;
 
       const slot = this.slots[slotIdx];
+      const wasReplacingExistingPedestal = slot.modelRoot !== null;
+      // Clear Dais clones before disposing a pedestal slot that might be referenced by the Dais
+      if (this.daisSlot?.sourceSlotIndices.includes(slotIdx)) {
+        this.clearDaisModels();
+      }
       this.clearSlot(slot);
 
       rootObject.traverse((obj) => {
@@ -2488,6 +4261,15 @@ export class ThreeModelViewer {
       this.applyWireframeToRoot(displayGroup);
       this.updateSlotLecternTexture(slot);
       this.triggerSlotRevealEffect(slot);
+
+      // Automatically rebuild the Central Dais combined sculpture after 2 new sculptures
+      // have been loaded into the museum view (while always keeping manual R / T / F working!)
+      if (this.mode === 'showroom' && wasReplacingExistingPedestal) {
+        this.newShowroomModelsSinceDaisRebuild++;
+        if (this.newShowroomModelsSinceDaisRebuild >= 2 && this.getFilledPedestalCount() >= 3) {
+          this.rebuildDaisCollision(true);
+        }
+      }
 
       if (this.mode === 'showroom' && focusOnLoad) {
         this.focusPedestal(slotIdx, true);
@@ -2557,13 +4339,17 @@ export class ThreeModelViewer {
         ) {
           const oldMat = mesh.material as THREE.Material | undefined;
           oldMat?.dispose();
-          mesh.material = new THREE.MeshStandardMaterial({
+          const fallbackMat = new THREE.MeshStandardMaterial({
             color: hasVertexColors ? 0xffffff : 0xe2e8f0,
             vertexColors: hasVertexColors,
             roughness: 0.42,
             metalness: 0.12,
             side: THREE.DoubleSide,
           });
+          if (!hasVertexColors) {
+            fallbackMat.userData.isFallbackStudioMaterial = true;
+          }
+          mesh.material = fallbackMat;
         }
       }
     });
@@ -2865,6 +4651,9 @@ export class ThreeModelViewer {
       if (slot.modelRoot) {
         this.applyWireframeToRoot(slot.modelRoot);
       }
+    }
+    if (this.daisSlot?.modelRoot) {
+      this.applyWireframeToRoot(this.daisSlot.modelRoot);
     }
   }
 

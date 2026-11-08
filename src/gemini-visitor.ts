@@ -1,9 +1,97 @@
-// import { GoogleGenAI, ThinkingLevel, Type } from '@google/genai';
+import { GoogleGenAI, ThinkingLevel, Type } from '@google/genai';
 
 // const CACHE_PREFIX = 'hf3d_gemini_whisper_v7:';
 
 export interface VisitorCommentsResponse {
   comments: string[];
+}
+
+export interface SculptureNameResponse {
+  name: string;
+}
+
+/**
+ * Takes 2–4 multi-angle snapshots of the collided 3D sculpture on the Central Dais
+ * and asks Gemini (`gemini-3.5-flash-lite`) to create an exhibit name for the sculpture.
+ */
+export async function generateSculptureNameForDais(params: {
+  imagesBase64Jpeg: string[];
+  assemblyMode?: 'collision' | 'totem';
+}): Promise<string | null> {
+  const apiKey = (import.meta.env.VITE_GEMINI_API_KEY as string | undefined)?.trim();
+  if (!apiKey) {
+    console.warn('[Gemini Sculpture Naming] No VITE_GEMINI_API_KEY configured.');
+    return null;
+  }
+
+  const validImages = params.imagesBase64Jpeg.filter((img) => img && img.length > 0);
+  if (validImages.length === 0) return null;
+
+  try {
+    const ai = new GoogleGenAI({ apiKey });
+
+    const promptText = `These are photos from different angles of a 3D sculpture created by colliding three 3D models together on a museum pedestal. Create a name for the sculpture (2 to 6 words, no quotation marks).`;
+
+    const config = {
+      thinkingConfig: {
+        thinkingLevel: ThinkingLevel.MINIMAL,
+      },
+      responseMimeType: 'application/json',
+      responseSchema: {
+        type: Type.OBJECT,
+        required: ['name'],
+        properties: {
+          name: {
+            type: Type.STRING,
+          },
+        },
+      },
+    };
+
+    const contents = [
+      {
+        role: 'user',
+        parts: [
+          ...validImages.map((base64Data) => ({
+            inlineData: {
+              mimeType: 'image/jpeg',
+              data: base64Data,
+            },
+          })),
+          {
+            text: promptText,
+          },
+        ],
+      },
+    ];
+
+    const response = await ai.models.generateContentStream({
+      model: 'gemini-3.5-flash-lite',
+      config,
+      contents,
+    });
+
+    let fullJson = '';
+    for await (const chunk of response) {
+      if (chunk.text) {
+        fullJson += chunk.text;
+      }
+    }
+
+    const parsed = JSON.parse(fullJson) as SculptureNameResponse;
+    const cleanName = parsed?.name?.replace(/^["'“”]+|["'“”]+$/g, '').trim();
+    if (cleanName) {
+      console.log(
+        `%c[Central Dais] Gemini Sculpture Name (${validImages.length} angles): "${cleanName}"`,
+        'color: #c084fc; font-weight: bold; font-size: 13px;'
+      );
+      return cleanName;
+    }
+  } catch (err) {
+    console.warn('[Gemini Sculpture Naming] Failed to generate sculpture name:', err);
+  }
+
+  return null;
 }
 
 export const VISITOR_PERSONAS = [
