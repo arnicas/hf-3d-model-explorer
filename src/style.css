@@ -854,13 +854,13 @@ body {
   background: rgba(255, 255, 255, 0.12);
 }
 
-/* Collapsible Debug Drawer */
+/* Collapsible Debug / About Drawer */
 .debug-drawer {
   margin-top: auto;
+  flex-shrink: 0;
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-md);
   background: rgba(12, 16, 24, 0.55);
-  overflow: hidden;
 }
 
 .debug-summary {
@@ -891,6 +891,11 @@ body {
   display: flex;
   flex-direction: column;
   gap: 0.7rem;
+}
+
+.about-body {
+  max-height: 180px;
+  overflow-y: auto;
 }
 
 .about-text {

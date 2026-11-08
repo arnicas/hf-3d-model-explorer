@@ -10,22 +10,111 @@ export interface SculptureNameResponse {
   name: string;
 }
 
+export interface SculptureNameResult {
+  name: string;
+  fromGemini: boolean;
+}
+
+export const FALLBACK_SCULPTURE_NAMES: string[] = [
+  // User-curated titles
+  'The Contemplation of Breakdown',
+  'A Schism in the Void',
+  'Repetition on Its Head',
+  'A Broken Material',
+  "Her Mother's Habit",
+  'Infection',
+  'Alien Gloss',
+  'Rhyme in Time, Upright',
+  // Additional obscure & deadpan sculpture titles
+  'Unscheduled Monument',
+  'Post-Domestic Residue',
+  'The Weight of an Excuse',
+  'An Agreement Between Strangers',
+  'Leftover Gravity',
+  'The Polite Intruder',
+  'Study for a Forgotten Appliance',
+  'Misplaced Anatomy',
+  'Three Things Refusing to Part',
+  'A Hesitation in the Mold',
+  'Domestic Parallax',
+  'Everything Must Go Upward',
+  'Symptom of a Larger Room',
+  'Synthetic Heirloom',
+  'The Second Disappointment',
+  'Accidental Reliquary',
+  'False Equilibrium',
+  'Borrowing Shape from Air',
+  'Mild Structural Panic',
+  'A Theory of Bad Posture',
+  'Objects Caught Conspiring',
+  'The Persistence of Clutter',
+  'Quietly Load-Bearing',
+  'Surrogate Ancestor',
+  'Uncanny Inventory',
+  'Ceremony Without Guests',
+  'A Brief Misunderstanding of Mass',
+  'Fossil of Next Tuesday',
+  'Reluctant Verticality',
+  'Some Assembly Regretted',
+  'Phantom Counterweight',
+  'Anatomy of a Rumor',
+  'The Last Known Arrangement',
+  'Too Heavy for Its Shadow',
+  'Suspiciously Still',
+  'An Argument in Three Volumes',
+  'Provincial Ectoplasm',
+  'Notes on a Collapsing Shelf',
+  'The Object Looks Back',
+  'Minor Tectonic Indiscretion',
+  'Something Kept in a Drawer',
+  'Vernacular Anomaly',
+  'A Compromise with the Floor',
+  'Half-Remembered Machinery',
+  'The Wrong Kind of Permanence',
+  'Soft Catastrophe in Brass',
+  'Calcified Alibi',
+  'Apology to the Plinth',
+];
+
+const recentFallbackIndices: number[] = [];
+
+export function pickFallbackSculptureName(): string {
+  const total = FALLBACK_SCULPTURE_NAMES.length;
+  const maxRecent = Math.min(20, Math.floor(total / 2));
+  const candidates: number[] = [];
+  for (let i = 0; i < total; i++) {
+    if (!recentFallbackIndices.includes(i)) {
+      candidates.push(i);
+    }
+  }
+  const pool = candidates.length > 0 ? candidates : FALLBACK_SCULPTURE_NAMES.map((_, i) => i);
+  const chosenIdx = pool[Math.floor(Math.random() * pool.length)];
+  recentFallbackIndices.push(chosenIdx);
+  if (recentFallbackIndices.length > maxRecent) {
+    recentFallbackIndices.shift();
+  }
+  return FALLBACK_SCULPTURE_NAMES[chosenIdx];
+}
+
 /**
  * Takes 2–4 multi-angle snapshots of the collided 3D sculpture on the Central Dais
  * and asks Gemini (`gemini-3.5-flash-lite`) to create an exhibit name for the sculpture.
+ * Falls back to `FALLBACK_SCULPTURE_NAMES` if the API key is missing, rate-limited, or fails.
  */
 export async function generateSculptureNameForDais(params: {
   imagesBase64Jpeg: string[];
   assemblyMode?: 'collision' | 'totem';
-}): Promise<string | null> {
+}): Promise<SculptureNameResult> {
   const apiKey = (import.meta.env.VITE_GEMINI_API_KEY as string | undefined)?.trim();
   if (!apiKey) {
-    console.warn('[Gemini Sculpture Naming] No VITE_GEMINI_API_KEY configured.');
-    return null;
+    console.warn('[Gemini Sculpture Naming] No VITE_GEMINI_API_KEY configured. Using fallback title.');
+    return { name: pickFallbackSculptureName(), fromGemini: false };
   }
 
   const validImages = params.imagesBase64Jpeg.filter((img) => img && img.length > 0);
-  if (validImages.length === 0) return null;
+  if (validImages.length === 0) {
+    return { name: pickFallbackSculptureName(), fromGemini: false };
+  }
 
   try {
     const ai = new GoogleGenAI({ apiKey });
@@ -85,13 +174,18 @@ export async function generateSculptureNameForDais(params: {
         `%c[Central Dais] Gemini Sculpture Name (${validImages.length} angles): "${cleanName}"`,
         'color: #c084fc; font-weight: bold; font-size: 13px;'
       );
-      return cleanName;
+      return { name: cleanName, fromGemini: true };
     }
   } catch (err) {
-    console.warn('[Gemini Sculpture Naming] Failed to generate sculpture name:', err);
+    console.warn('[Gemini Sculpture Naming] Failed to generate sculpture name, using fallback:', err);
   }
 
-  return null;
+  const fallback = pickFallbackSculptureName();
+  console.log(
+    `%c[Central Dais] Fallback Sculpture Name: "${fallback}"`,
+    'color: #f59e0b; font-weight: bold; font-size: 13px;'
+  );
+  return { name: fallback, fromGemini: false };
 }
 
 export const VISITOR_PERSONAS = [

@@ -1,6 +1,39 @@
-# HF 3D Roulette (Museum Showroom & Studio)
+# HF 3D Roulette (Studio & Museum Showroom)
 
-An interactive WebGL 3D experience that crawls, samples, and curates random 3D objects from public datasets and repositories on Hugging Face Hub, rendering them in an atmospheric 4-plinth virtual museum with localized 3D spatial audio, neural text-to-speech commentary, and client-side Gemini Vision analysis.
+An interactive WebGL 3D experience that samples and curates random 3D objects from public datasets on Hugging Face Hub, featuring two interactive viewing modes—a single-model **Studio View** and a walkable **Museum Showroom** with a central **Thought Piece** assemblage—powered by Three.js and multi-angle **Gemini Vision** sculpture naming.
+
+Created by **Lynn Cherny / @arnicas** ([ghostweather.com](https://ghostweather.com)), made using **Gemini Argon** in **Antigravity**.
+
+---
+
+## Two Interactive Views
+
+Switch between the two views at any time using the top-left mode toggle button or pressing <kbd>M</kbd>:
+
+### 1. Studio View (Single-Model Turntable)
+* **Focused 3D Inspection**: Displays one random 3D model at a time on a warm studio turntable with OrbitControls, contact shadows, and automatic maquette scale normalization.
+* **Dataset & Geometry Inspector**: The right-hand sidebar shows the source Hugging Face dataset, author, license, description, tags, and live geometry stats (vertices, triangles, meshes, file size, format) along with direct links to download the 3D file or browse the repository tree.
+* **Viewport Controls**: Toggle auto-rotation (<kbd>A</kbd>), wireframe (<kbd>W</kbd>), studio floor (<kbd>G</kbd>), Y/Z up-axis flip (<kbd>U</kbd>), camera reset (<kbd>C</kbd>), or 30-second idle auto-advance (<kbd>I</kbd>).
+
+### 2. Museum Showroom View (4 Pedestals + Central "Thought Piece" Dais)
+* **Walkable 4-Pedestal Gallery**: Places 4 distinct 3D models onto individual marble-and-walnut museum plinths (<kbd>1</kbd>–<kbd>4</kbd>) arranged in a semi-circular gallery arc, surrounded by framed wall paintings streamed from Hugging Face art datasets (`Andris2067/Paintings_old`, `royam0820/baya-paintings-01`, `Nguyen17/laion_art_en`, and Met Open Access).
+* **Proximity LOD & 3D Lectern Plaques**: As you walk around with <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> or Arrow keys (or click any pedestal/plaque to glide to it), distant pedestals automatically transition between Full PBR Detail, Medium Lambert LOD, and Wireframe LOD. Each pedestal features an angled 3D lectern plaque displaying its title, dataset, triangle count, and scale.
+* **Central "Thought Piece" Dais (<kbd>5</kbd> / `⚡ Thought Piece`)**:
+  * Positioned at the center of the rotunda, the **Thought Piece** fuses 3 models from the surrounding pedestals into a single composite sculpture.
+  * **Totem & Collision Modes (<kbd>T</kbd>)**: Defaults to a vertical **Totem Stack** (which analyzes 10-band vertical cross-section profiles and vertex medoids to stack the heaviest base on the bottom and interlock joints in 3D space) and can be toggled to a chaotic **3-Model Collision**.
+  * **Automatic Random Patina on Untextured Meshes**: Any untextured clay/scan meshes included in the Thought Piece automatically receive a randomized procedural museum patina (Gilded Cast Bronze, Oxidized Verdigris Copper, Brushed Damascus Chrome, or Gold-Veined Nero Marquina Marble), while textured and multi-color low-poly models keep their native materials.
+  * **Automatic & Manual Re-Assembly**: The Thought Piece automatically rebuilds whenever **2 new sculptures** are loaded into the museum pedestals (showing `"Under construction"` on its plaque whenever empty), and can also be re-assembled manually at any time with <kbd>R</kbd> when standing near the central dais.
+
+---
+
+## How Gemini Captions the Combined "Thought Piece" Artwork
+
+Whenever 3 models are automatically combined onto the central **Thought Piece** dais in the Museum Showroom:
+
+1. **Multi-Angle Snapshot Photography**: [`ThreeModelViewer.captureDaisSculptureSnapshots()`](src/viewer.ts) captures **3 multi-angle 256×256 JPEG snapshots** (`quality: 0.8`) from three camera angles (`-0.68`, `0.68`, and `2.38` radians) around the combined sculpture and immediately restores the user camera frame so no flicker occurs. Because each image is 256×256 (≤384×384), Gemini bills a single tile (~258 tokens) per image (~774 image tokens total per call).
+2. **Multimodal Gemini Naming (`@google/genai`)**: [`generateSculptureNameForDais()`](src/gemini-visitor.ts) sends the 3 JPEG views to **`gemini-3.5-flash-lite`** with `ThinkingLevel.MINIMAL`, prompting it to create a **2 to 6 word sculpture title** in structured JSON (`{ "name": "..." }`).
+3. **Live Plaque Engraving**: As soon as Gemini returns the title, the 3D lectern plaque in front of the central dais re-renders with the new title (e.g., `✦ EXHIBIT TITLE · NAMED BY GEMINI FROM 3 CAMERA ANGLES`).
+4. **Cost-Conscious Manual Controls**: Gemini is only called when a new Thought Piece is automatically assembled (on initial Showroom entry and after every 2 new sculptures are added to the museum). Manually clicking **💥 Re-Assemble (<kbd>R</kbd>)** or toggling **🗿 Mode: Totem / Smash (<kbd>T</kbd>)** re-arranges the current 3 objects and keeps the existing Gemini title with **zero additional Gemini API calls**.
 
 ---
 
@@ -108,8 +141,8 @@ This spins up a local web server serving the `dist/` directory at **`http://loca
 ## Static Asset Manifests (Fast & Rate-Limit Proof)
 
 To protect the application against Hugging Face API rate limits (`429 Too Many Requests`) for public visitors, the app boots instantly using pre-compiled static manifests located in `public/`:
-* **`public/manifest-3d.json`** (~922 verified 3D assets across `lowpoly-coder-4b-data`, `smithsonian-3d-glb`, `scenario-labs/3d-collection`, `abo-furniture-glb`, `TexVerse`, etc.).
-* **`public/manifest-art.json`** (Framed classical and modern wall paintings).
+* **`public/manifest-3d.json`** (1,231 verified `.glb` 3D assets across `cfahlgren1/lowpoly-coder-4b-data`, `TuTao/scandi-home-lowpoly`, `codepawl/smithsonian-3d-glb`, `cfahlgren1/3d-arena`, `cfahlgren1/3d-collection`, `codepawl/google-poly-glb`, `hugging-3d/smithsonian-open-access-3d`, `YiboZhang2001/TexVerse-1K`, `YiboZhang2001/TexVerse`, `Optikan112/abo-furniture-glb`, and `codepawl/scanned-objects-glb`).
+* **`public/manifest-art.json`** (80 permanent framed classical and modern wall paintings).
 
 When a visitor opens the app, all 3D models and paintings hydrate in **~50 milliseconds** with **zero calls** to Hugging Face metadata endpoints.
 
@@ -137,21 +170,34 @@ bun run add-dataset YiboZhang2001/TexVerse 60 glbs/glbs_2k/ 60 --replace
 
 ---
 
-## ⚠️ Performance Warnings
+## How Hugging Face Is Polled for Additional Models
 
-### 1. `pickRandom()` is O(n²) in pool size
+During normal browsing, the app relies on `public/manifest-3d.json` (1,231 models) and embedded `STATIC_DATASET_METADATA` ([`src/hf.ts`](src/hf.ts)), making **zero live Hugging Face API requests** so visitors never trigger `429 Too Many Requests` errors.
 
-`HF3DDiscoveryService.pickRandom()` (`src/hf.ts`) picks a repository uniformly at random, then an asset within that repository. Before choosing, it calls `getRepoFileCount()` for **every** candidate, and that helper linearly walks the whole pool — so a single roll costs roughly `pool size²` iterations.
+Live Hugging Face polling ([`HF3DDiscoveryService.discoverMoreInBackground()`](src/hf.ts)) is only invoked when:
+1. **Low Pool Threshold**: The active pool drops below 40 models (`matchingPool.length < 40 && stagedCount < 40`), or `manifest-3d.json` is unavailable.
+2. **Manual Refresh (Hidden by Default)**: The **Refresh Pool** button (`#btn-refresh-pool` in [`index.html`](index.html), hidden by default) is unhidden and clicked (`handleRefreshPool()`).
 
-Measured: at the current **922-entry pool it is ~850K iterations per roll** (a few milliseconds in the browser — acceptable, but not free). The pool is capped at `MAX_POOL_SIZE = 2000`; near that cap each roll costs ~4M iterations, and scripted/exhaustive use (batch sampling, simulations, thousands of rolls) becomes noticeably slow.
+When live polling runs, it stages newly discovered 3D files into a background buffer (`stagedPool`, surfaced via the `+N` badge on **Refresh Pool**) in two phases:
+1. **Phase 1 — Curated Seed Dataset Rotation (`SEED_DATASETS`)**:
+   * Steps through one unvisited repository per wave from `SEED_DATASETS`.
+   * First queries the **Hugging Face Datasets Server API** (`/first-rows` and `/rows?dataset=...&offset={randomOffset}&length=100`) to sample random slices across large Parquet/tabular 3D datasets without downloading full tables.
+   * If the dataset is not tabular, falls back to `@huggingface/hub` **`listFiles()`** (recursive git-tree walk), filtering for `.glb`, `.gltf`, `.obj`, and `.stl` files between `MIN_QUALITY_FILE_BYTES` (2 KB) and `MAX_RANDOM_FILE_BYTES` (18 MB).
+2. **Phase 2 — Live Hub Keyword Crawl (`CRAWL_QUERIES`)**:
+   * Once all seed datasets have been visited, subsequent waves cycle through search keywords (`glb`, `3d`, `objaverse`, `gltf`, `meshes`, `3d-models`, `photogrammetry`, `lowpoly`, `furniture`, `architecture`, `cultural-heritage`, etc.) via `@huggingface/hub` `listDatasets()` and `listModels()`, scanning up to 2 newly discovered repositories per wave.
+   * Staged models are merged into the active pool (`MAX_POOL_SIZE = 2000`) when **Refresh Pool** is clicked or automatically on the 30-second idle cycle once `>= 20` staged items are ready.
 
-**Fix if the pool ever grows:** maintain a `Map<repoId, count>` as a counter, updated on pool add/remove, instead of recomputing per candidate — or hoist the counts to a single pass before the selection loop. That turns each roll into O(n).
+---
 
-### 2. Manifest entries bypass the file-size guards
+## Performance & Manifest Notes
 
-`MAX_RANDOM_FILE_BYTES` (60 MB) and `MIN_QUALITY_FILE_BYTES` are enforced in `createAsset()`, which is only used by the *live* discovery paths. Assets loaded straight from `public/manifest-3d.json` skip those checks entirely.
+### 1. `pickRandom()` Uniform Repository Sampling (`O(n)`)
 
-Consequence: a huge model added to the manifest will still be picked and will stall the viewer on load. When sampling heavy repositories (e.g. `YiboZhang2001/TexVerse`, whose 2K tier alone ranges 0.1 MB → 302 MB), always filter at generation time — use `maxSizeBytes` on a `SeedTarget`, or the `[maxMB]` argument of `add-dataset`.
+`HF3DDiscoveryService.pickRandom()` ([`src/hf.ts`](src/hf.ts)) samples a repository uniformly at random first and then picks a random asset within that repository so large datasets do not drown out smaller collections. Rather than calling `getRepoFileCount()` per candidate (which previously caused `O(n²)` scans over the pool), `pickRandom()` precomputes `repoCounts` in a single **`O(n)`** pass before grouping candidates by `repoId`.
+
+### 2. Manifest File-Size Guards
+
+`MAX_RANDOM_FILE_BYTES` (18 MB) and `MIN_QUALITY_FILE_BYTES` (2 KB) are enforced in `createAsset()` during live Hub discovery. Because assets loaded directly from `public/manifest-3d.json` bypass `createAsset()`, file-size filtering (`<= 12–15 MB`) is enforced at manifest generation time via `maxSizeBytes` in [`scripts/generate-manifest.ts`](scripts/generate-manifest.ts) and the `[maxMB]` argument of `add-dataset`.
 
 ---
 
@@ -160,10 +206,12 @@ Consequence: a huge model added to the manifest will still be picked and will st
 | Action | Control |
 | :--- | :--- |
 | **Walk around Gallery** | <kbd>W</kbd> <kbd>A</kbd> <kbd>S</kbd> <kbd>D</kbd> or Arrow Keys |
-| **Look around** | Click + Drag mouse (Pointer Lock / First-Person Camera) |
-| **Jump / Walk to Pedestal** | <kbd>1</kbd>, <kbd>2</kbd>, <kbd>3</kbd>, <kbd>4</kbd> or click the lectern plaque |
-| **Roll New Exhibit** | <kbd>Space</kbd> (rotates oldest pedestal) |
-| **Toggle View Mode** | <kbd>M</kbd> (switches between 4-pedestal Showroom and Single-Model Studio) |
+| **Look around** | Click + Drag mouse |
+| **Jump / Walk to Pedestal** | <kbd>1</kbd>, <kbd>2</kbd>, <kbd>3</kbd>, <kbd>4</kbd>, <kbd>5</kbd> (`⚡ Thought Piece`) or click any lectern plaque |
+| **Re-Assemble Thought Piece** | <kbd>R</kbd> or click **💥 Re-Assemble** (when near the Thought Piece dais) |
+| **Toggle Totem / Collision Mode** | <kbd>T</kbd> or click **🗿 Mode: Totem** (when near the Thought Piece dais) |
+| **Roll New Exhibit** | <kbd>Space</kbd> (loads a new model; Thought Piece auto-rebuilds every 2 new museum exhibits) |
+| **Toggle View Mode** | <kbd>M</kbd> (switches between Single-Model Studio and 4-Pedestal Museum Showroom) |
 | **Toggle Spatial Audio** | Click the **🔊 Audio** sidebar pill |
 | **Toggle Auto-Idle Next** | <kbd>I</kbd> or click **Idle Next: 30s** pill |
 | **Open HF Dataset / Download** | Click `#N 📊 Dataset ↗` or `#N ⬇️ Download 3D ↗` in the top header |

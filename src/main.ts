@@ -641,7 +641,7 @@ btnShowroomRoll.addEventListener('click', () => {
 
 btnShowroomRecollide.addEventListener('click', () => {
   resetIdleTimer();
-  const ok = viewer.rebuildDaisCollision(true);
+  const ok = viewer.rebuildDaisCollision(true, false, true);
   if (ok) {
     viewer.focusPedestal(DAIS_SLOT_INDEX, true);
     updateFocusedPedestalUI(DAIS_SLOT_INDEX);
@@ -698,6 +698,13 @@ repoTypeSelect?.addEventListener('change', () => {
 formatSelect?.addEventListener('change', () => {
   renderPoolList();
   void loadRandomModel();
+});
+
+const aboutDrawer = document.querySelector<HTMLDetailsElement>('.about-drawer');
+aboutDrawer?.addEventListener('toggle', () => {
+  if (aboutDrawer.open) {
+    aboutDrawer.scrollIntoView({ behavior: 'smooth', block: 'end' });
+  }
 });
 
 // Viewport Toolbar Buttons

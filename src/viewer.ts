@@ -14,7 +14,10 @@ import {
   type WallArtworkItem,
 } from './hf';
 import { SpatialAudioManager } from './audio';
-import { generateSculptureNameForDais } from './gemini-visitor';
+import {
+  generateSculptureNameForDais,
+  pickFallbackSculptureName,
+} from './gemini-visitor';
 
 export type ViewerMode = 'studio' | 'showroom';
 export type LodTier = 'close' | 'medium' | 'far';
@@ -118,6 +121,7 @@ interface InternalDaisSlot {
   sourceAssets: Discovered3DAsset[];
   stats: LoadedModelStats | null;
   sculptureName: string | null;
+  sculptureNameIsGemini: boolean;
   isNamingSculpture: boolean;
   namingRequestId: number;
   collisionCount: number;
@@ -1320,6 +1324,7 @@ export class ThreeModelViewer {
       sourceAssets: [],
       stats: null,
       sculptureName: null,
+      sculptureNameIsGemini: false,
       isNamingSculpture: false,
       namingRequestId: 0,
       collisionCount: 0,
@@ -1511,7 +1516,7 @@ export class ThreeModelViewer {
 
   public toggleDaisAssemblyMode(): DaisAssemblyMode {
     this.daisAssemblyMode = this.daisAssemblyMode === 'collision' ? 'totem' : 'collision';
-    this.rebuildDaisCollision(true);
+    this.rebuildDaisCollision(true, false, true);
     return this.daisAssemblyMode;
   }
 
@@ -1913,7 +1918,9 @@ export class ThreeModelViewer {
       ctx.font = 'bold 19px ui-monospace, SFMono-Regular, Menlo, monospace';
       ctx.fillText(
         this.daisSlot.sculptureName
-          ? '✦ EXHIBIT TITLE · NAMED BY GEMINI FROM 3 CAMERA ANGLES'
+          ? this.daisSlot.sculptureNameIsGemini
+            ? '✦ EXHIBIT TITLE · NAMED BY GEMINI FROM 3 CAMERA ANGLES'
+            : '✦ EXHIBIT TITLE'
           : this.daisSlot.isNamingSculpture
             ? '✦ PHOTOGRAPHING SCULPTURE & NAMING WITH GEMINI…'
             : '✦ THOUGHT PIECE',
@@ -2563,8 +2570,15 @@ export class ThreeModelViewer {
     };
   }
 
-  public rebuildDaisCollision(triggerReveal = true): boolean {
+  public rebuildDaisCollision(
+    triggerReveal = true,
+    callGemini = true,
+    keepCurrentCombo = false
+  ): boolean {
     if (!this.daisSlot) return false;
+    const prevSlotIndices = [...this.daisSlot.sourceSlotIndices];
+    const prevSculptureName = this.daisSlot.sculptureName;
+    const prevSculptureNameIsGemini = this.daisSlot.sculptureNameIsGemini;
     this.clearDaisModels();
 
     const availableSlots = this.slots.filter((s) => s.modelRoot !== null && s.asset !== null);
@@ -2578,7 +2592,14 @@ export class ThreeModelViewer {
 
     // Choose up to 3 distinct pedestals to collide
     let chosenSlots: InternalPedestalSlot[];
-    if (availableSlots.length >= 4) {
+    if (keepCurrentCombo && prevSlotIndices.length >= 2) {
+      chosenSlots = prevSlotIndices
+        .map((i) => this.slots[i])
+        .filter((s) => s && s.modelRoot && s.asset);
+      if (chosenSlots.length < 2) {
+        chosenSlots = availableSlots.slice(0, 3);
+      }
+    } else if (availableSlots.length >= 4) {
       const combos = [
         [0, 1, 2],
         [0, 1, 3],
@@ -2931,9 +2952,11 @@ export class ThreeModelViewer {
     this.daisSlot.contactShadowMesh.scale.set(shadowSpan, shadowSpan, 1);
     this.daisSlot.contactShadowMesh.visible = true;
 
-    this.daisSlot.sculptureName = null;
+    this.daisSlot.sculptureName = keepCurrentCombo ? prevSculptureName : null;
+    this.daisSlot.sculptureNameIsGemini = keepCurrentCombo ? prevSculptureNameIsGemini : false;
     this.daisSlot.namingRequestId++;
-    const canName = this.mode === 'showroom' && this.daisSlot.sourceAssets.length >= 2;
+    const canName =
+      callGemini && this.mode === 'showroom' && this.daisSlot.sourceAssets.length >= 2;
     this.daisSlot.isNamingSculpture = canName;
 
     this.updateDaisLecternTexture();
@@ -3055,12 +3078,16 @@ export class ThreeModelViewer {
 
     const snapshots = this.captureDaisSculptureSnapshots();
     if (snapshots.length === 0) {
+      const fallback = pickFallbackSculptureName();
       this.daisSlot.isNamingSculpture = false;
+      this.daisSlot.sculptureName = fallback;
+      this.daisSlot.sculptureNameIsGemini = false;
       this.updateDaisLecternTexture();
+      this.onDaisSculptureNamed?.(fallback);
       return;
     }
 
-    const generatedName = await generateSculptureNameForDais({
+    const result = await generateSculptureNameForDais({
       imagesBase64Jpeg: snapshots,
       assemblyMode: this.daisAssemblyMode,
     });
@@ -3068,13 +3095,10 @@ export class ThreeModelViewer {
     if (!this.daisSlot || this.daisSlot.namingRequestId !== requestId) return;
 
     this.daisSlot.isNamingSculpture = false;
-    if (generatedName) {
-      this.daisSlot.sculptureName = generatedName;
-      this.updateDaisLecternTexture();
-      this.onDaisSculptureNamed?.(generatedName);
-    } else {
-      this.updateDaisLecternTexture();
-    }
+    this.daisSlot.sculptureName = result.name;
+    this.daisSlot.sculptureNameIsGemini = result.fromGemini;
+    this.updateDaisLecternTexture();
+    this.onDaisSculptureNamed?.(result.name);
   }
 
   /**
